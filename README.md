@@ -1,145 +1,135 @@
-# ESP32-S3 LofiOS Sampler
+# Lofi Beat Maker - ESP32-S3
 
-## Overview
-LofiOS is a minimal, functional, and aesthetically pleasing design language and firmware for an ESP32-S3 based lofi sampler. It features a custom 128x64 OLED interface, 16-pad matrix support, and a comprehensive navigation system inspired by modern music hardware like the OP-1 and Elektron devices.
+A hardware lofi beat maker inspired by PO-33 and EP-133, built on ESP32-S3.
 
----
+## Hardware
 
-## 🚀 Quick Start
+- **MCU**: ESP32-S3-WROOM-1U-N8R2 (8MB Flash, 2MB PSRAM)
+- **DAC**: PCM5102A (I2S)
+- **Display**: SSD1306 OLED 128x64 (I2C)
+- **Input**: 4x4 Button Matrix (16 keys) + 2 Function Buttons
+- **Output**: 4 Status LEDs
 
-### Hardware Setup
-- **MCU**: ESP32-S3-WROOM-1U-N8R2
-- **Display**: 128x64 monochrome OLED (I2C)
-  - SDA: GPIO 48
-  - SCL: GPIO 47
-- **Input**:
-  - 4x4 Button Matrix (Rows: 4,3,8,15 | Cols: 16,17,18,13)
-  - F1 (SHIFT/BACK): GPIO 37
-  - F2 (MODE/SELECT): GPIO 36
-- **LEDs**: GPIO 9, 10, 11, 12
+## Features
 
-### Compilation
-1. Install Arduino IDE with ESP32 support.
-2. Install `U8g2` library.
-3. Select board: `ESP32S3 Dev Module`.
-4. Upload `SynthProject.ino`.
+### Core Features (Implemented)
 
-### First Use
-1. **Power On**: Boots to **PERFORMANCE** mode.
-2. **Play**: Tap pads 0-15 to trigger samples.
-3. **Navigate**: 
-   - **F2** moves forward (Next Mode / Confirm).
-   - **F1** moves back (Previous Mode / Cancel).
-   - **Hold F1 (800ms)** for sub-modes/modifiers.
+1. **Sample Playback Engine**
+   - 16 one-shot sample slots (one per key)
+   - Chromatic pitch shifting (±12 semitones)
+   - Sample start/end point trimming
+   - Basic amplitude envelope (attack/release)
 
----
+2. **Pattern Sequencer**
+   - 16-step sequencer
+   - 4 patterns
+   - Per-step note entry (which of 16 samples to trigger)
+   - Tempo control (60-180 BPM range)
+   - Pattern chaining for song mode
 
-## ⚡ Quick Reference
+3. **Built-in Lofi Sound Bank**
+   - Pre-load 8-12 essential samples into flash
+   - *(User needs to add sample data)*
 
-### Function Keys
-| Key | Action | Function |
-|-----|--------|----------|
-| **F1** | Tap | BACK / EXIT / STOP |
-| **F2** | Tap | NEXT / ENTER / CONFIRM |
-| **F1** | Hold (800ms) | SHIFT / MODIFIER |
+4. **Effects**
+   - **Bit crusher** (4→8→12→16 bit) - essential for lofi aesthetic
+   - **Low-pass filter** with resonance - warmth/muffling
 
-### Primary Modes (Cycle with F2)
-1. **🎹 PERFORMANCE**: Live sample triggering.
-2. **🎵 SEQUENCER**: Step programming (16 steps).
-3. **🎼 SONG**: Pattern chaining.
-4. **📦 KIT**: Load sample kits.
-5. **⚙️ SETTINGS**: System configuration.
+5. **UI/Controls**
+   - **Mode button**: Switch between Play/Pattern/Settings modes
+   - **Function button combinations**:
+     - Hold + key = adjust pitch/sample params
+     - Hold + mode = save/load pattern
+   - **LED feedback**: Step indicator (which of 16 steps is playing)
+   - **OLED display**: Current pattern/BPM, active effect settings
 
-### Common Shortcuts
-- **Octave Shift**: Tap F1 in Performance Mode.
-- **Volume**: Hold F1 + Pad 15 (Performance Mode).
-- **Edit Step**: Long Press Step Pad (Sequencer Mode).
-- **FX Edit**: Hold F1 for 800ms (Performance Mode).
-- **Mute Tracks**: Hold F1 + Pads 0-7 (Performance Mode).
+## Building
 
----
+This project uses PlatformIO.
 
-## 📖 Comprehensive User Manual
+1. Install PlatformIO
+2. Open project in PlatformIO
+3. Build: `pio run`
+4. Upload: `pio run -t upload`
 
-### 1. PERFORMANCE MODE
-**Purpose**: Live playing and performance.
-- **Display**: Waveform scope (left), 4x4 pad grid (right).
-- **Controls**:
-  - **Pads 0-15**: Trigger samples.
-  - **F1 Tap**: Cycle Octave (-1, 0, +1).
-  - **F1 H + Pads 0-7**: Mute/Unmute tracks.
-  - **F1 H + Pads 8-11**: Toggle FX (Crush, SR, Filt, Delay).
-  - **F1 H + Pad 15**: Enter Volume Mode.
+## Adding Samples
 
-### 2. SEQUENCER MODE
-**Purpose**: Step sequencing.
-- **Display**: 16-step grid, track info.
-- **Controls**:
-  - **Pads 0-15**: Toggle steps.
-  - **F1 Tap**: Play/Stop.
-  - **F1 H + Pads 0-7**: Select Track (1-8).
-  - **F1 H + Pads 8-11**: Select Pattern (1-4).
-  - **F1 H + Pads 12-13**: BPM +/- 5.
-  - **Long Press Step**: Enter **STEP EDIT** for detailed parameter locking (Velocity, Probability, Pitch, Filter).
+To add the built-in lofi sound bank, you need to:
 
-### 3. SONG MODE
-**Purpose**: Arrange patterns into a song.
-- **Controls**:
-  - **Pads 0-1**: Cursor Up/Down.
-  - **Pads 2-5**: Select Pattern type for slot.
-  - **Pads 6-7**: Adjust Repeat Count.
-  - **Pads 8-9**: Insert/Delete Slot.
-  - **F1 H + Pad 12**: Toggle Loop.
+1. Convert your samples to:
+   - Format: 16-bit signed PCM
+   - Sample rate: 22kHz (for lofi aesthetic) or 44.1kHz
+   - Mono
 
-### 4. KIT MODE
-**Purpose**: Select and load sample kits.
-- **Controls**:
-  - **Cursor**: Use Pads 0/1 to scroll.
-  - **Load**: Press **F2** to load selected kit.
-  - **Cancel**: Press **F1**.
+2. Include them in your code. Example:
 
-### 5. SETTINGS MODE
-**Purpose**: Global configuration.
-- **Pages**:
-  1. Audio (Volume, Tune, Attack, Release)
-  2. Sequencer (BPM, Length, Metro, Swing)
-  3. System (Auto-save, USB, Brightness, Reset)
-- **Controls**:
-  - **F2**: Edit selected setting.
-  - **Pads 2-3**: Page Up/Down.
+```cpp
+// In loadDefaultSamples() function in main.cpp
+#include "samples.h" // Your sample data header
 
----
-
-## 🔄 Navigation Flow & State Machine
-
-### Mode Hierarchy
-```
-PERFORMANCE <-> SEQUENCER <-> SONG <-> KIT <-> SETTINGS
-     ^              ^
-     |              |
-  [SUB-MODES]    [SUB-MODES]
-  - Volume       - Step Edit
-  - FX Edit
+// Load samples
+sampleEngine.loadSample(0, kick1_data, kick1_length, 22050);
+sampleEngine.loadSample(1, kick2_data, kick2_length, 22050);
+sampleEngine.loadSample(2, snare1_data, snare1_length, 22050);
+// ... etc
 ```
 
-### Accessing Sub-Modes
-- **Volume**: From Performance, hold F1 + Pad 15.
-- **FX Edit**: From Performance, hold F1 (800ms).
-- **Step Edit**: From Sequencer, long press any step (800ms).
-- **Setting Edit**: From Settings, press F2 on an item.
+3. Create sample data header. You can use tools like:
+   - `xxd -i sample.wav > sample.h` (after extracting raw PCM)
+   - Online WAV to C array converters
+   - Custom Python script to convert WAV to C array
 
-All sub-modes auto-exit on completion or via **F1** (Back).
+## Documentation
 
----
+- **[USER_GUIDE.md](USER_GUIDE.md)** - Comprehensive user manual with tutorials, troubleshooting, and advanced techniques
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick reference card for easy access while using the device
 
-## 🛠 Troubleshooting
+## Quick Usage
 
-| Issue | Solution |
-|-------|----------|
-| **Stuck in validation?** | Press **F1** to back out of any menu. |
-| **No Sound?** | Check Volume (Perf -> F1+Pad15). Ensure Kit is loaded. |
-| **Can't Edit Step?** | Make sure to HOLD the pad for full 800ms. |
-| **Display Glitch?** | Reset device (Hardware limitation of I2C sometimes). |
+### Play Mode
+- Press any key (0-15) to trigger the corresponding sample
+- Press OCTAVE to start/stop the sequencer
+- Hold OCTAVE + key to adjust pitch (when sequencer not playing)
 
----
-*Generated consolidated documentation.*
+### Pattern Mode
+- Press key (0-15) to select/edit that step
+- Press OCTAVE + key to assign sample to step
+- Press MODE + key (0-3) to select pattern
+- Sequencer starts/stops automatically when pattern is playing
+
+### Settings Mode
+- Press key 0-2 to select setting (BPM, BitCrusher, Filter)
+- Press key 4-15 to adjust value
+
+**For detailed instructions, see [USER_GUIDE.md](USER_GUIDE.md)**
+
+## Memory Strategy
+
+- **5MB**: Reserved for samples in SPIFFS partition (~30-60 seconds at 22kHz/16-bit)
+- **2MB**: Application code/UI (factory partition)
+- **2MB PSRAM**: Audio buffer/playback (runtime)
+- **~1MB**: Bootloader, NVS, PHY init data
+
+The custom partition table (`partitions.csv`) allocates:
+- `factory`: 2MB for application code
+- `samples`: 5MB SPIFFS filesystem for sample storage
+
+## Audio Architecture
+
+```
+16 voices → Mixer → Bit crusher → Filter → I2S DAC
+           (polyphonic)    ↓          ↓
+                      Effect chain
+```
+
+## Future Enhancements
+
+- Sample recording
+- Live effects per pad
+- Swing/groove quantization
+- Multiple tracks
+- SD card sample loading
+
+## License
+
+MIT

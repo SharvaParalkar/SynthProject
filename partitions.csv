@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Custom partition table for 8MB flash
+# - 2MB for application (code/UI)
+# - 5MB for samples (SPIFFS filesystem)
+# - ~1MB reserved for bootloader, NVS, etc.
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x200000,
+samples,  data, spiffs,  0x210000,0x500000,
