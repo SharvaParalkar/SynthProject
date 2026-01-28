@@ -2,77 +2,50 @@
 #define SEQUENCER_H
 
 #include <Arduino.h>
-#include "config.h"
-#include "SampleEngine.h"
-
-struct Step {
-    uint8_t sampleIndex;  // Which sample to play (0-15, 255 = empty)
-    float pitch;          // Pitch offset in semitones (-12 to +12)
-    bool active;          // Is this step active?
-};
-
-struct Pattern {
-    Step steps[STEPS_PER_PATTERN];
-    uint8_t length;       // Pattern length (1-16)
-};
+#include "Config.h"
+#include "AudioEngine.h"
 
 class Sequencer {
 public:
-    Sequencer(SampleEngine* engine);
-    
-    void begin();
+    Sequencer(AudioEngine& audio);
+    void init();
     void update();
-    
-    // Playback control
     void start();
     void stop();
-    void pause();
-    bool isPlaying() { return playing; }
+    void togglePlay();
+    void setBPM(int newBpm);
+    int getBPM();
+    void setInstrument(int track, Instrument inst);
+    Instrument getInstrument(int track);
+    void clearTrack(int track);
     
-    // Pattern management
-    void setCurrentPattern(uint8_t pattern);
-    uint8_t getCurrentPattern() { return currentPattern; }
-    Pattern* getPattern(uint8_t index) { return (index < MAX_PATTERNS) ? &patterns[index] : nullptr; }
+    // Grid interaction
+    void toggleStep(int track, int step);
+    bool getStep(int track, int step);
     
-    // Step editing
-    void setStep(uint8_t pattern, uint8_t step, uint8_t sampleIndex, float pitch = 0.0f);
-    void toggleStep(uint8_t pattern, uint8_t step);
-    void clearStep(uint8_t pattern, uint8_t step);
-    void clearPattern(uint8_t pattern);
+    // State Accessors for UI
+    int getCurrentStep();
+    int getCurrentTrack();
+    void setCurrentTrack(int track);
+    int getCurrentOctave();
+    void setCurrentOctave(int oct);
+    bool isPlayingState();
     
-    // Tempo control
-    void setBPM(uint8_t bpm);
-    uint8_t getBPM() { return bpm; }
-    
-    // Pattern chaining
-    void setChain(uint8_t* chain, uint8_t length);
-    void clearChain();
-    bool isChaining() { return chainLength > 0; }
-    
-    // Get current step (for LED feedback)
-    uint8_t getCurrentStep() { return currentStep; }
+    // Data
+    // Making these public for easier UI access for now (or write comprehensive getters)
+    bool sequence[4][16];
+    Instrument trackInstruments[4];
 
 private:
-    SampleEngine* sampleEngine;
-    Pattern patterns[MAX_PATTERNS];
-    
-    bool playing;
-    uint8_t currentPattern;
-    uint8_t currentStep;
-    uint8_t bpm;
-    
-    // Timing
+    AudioEngine& audioEngine;
+    int bpm;
+    bool isPlaying;
+    int currentStep;
+    int currentTrack;
+    int currentOctave;
     unsigned long lastStepTime;
-    unsigned long stepInterval; // microseconds per step
     
-    // Pattern chaining
-    uint8_t chain[MAX_PATTERNS];
-    uint8_t chainLength;
-    uint8_t chainPosition;
-    
-    void calculateStepInterval();
-    void triggerStep();
-    void advanceStep();
+    uint8_t stepNotes[4][16];
 };
 
-#endif // SEQUENCER_H
+#endif

@@ -1,135 +1,242 @@
-# Lofi Beat Maker - ESP32-S3
+# ESP32-S3 16-Step Sequencer & Launchpad
 
-A hardware lofi beat maker inspired by PO-33 and EP-133, built on ESP32-S3.
-
-## Hardware
-
-- **MCU**: ESP32-S3-WROOM-1U-N8R2 (8MB Flash, 2MB PSRAM)
-- **DAC**: PCM5102A (I2S)
-- **Display**: SSD1306 OLED 128x64 (I2C)
-- **Input**: 4x4 Button Matrix (16 keys) + 2 Function Buttons
-- **Output**: 4 Status LEDs
+A powerful 16-step sequencer and launchpad for the ESP32-S3 with polyphonic audio synthesis.
 
 ## Features
 
-### Core Features (Implemented)
+### 🎹 Three Operating Modes
 
-1. **Sample Playback Engine**
-   - 16 one-shot sample slots (one per key)
-   - Chromatic pitch shifting (±12 semitones)
-   - Sample start/end point trimming
-   - Basic amplitude envelope (attack/release)
+1. **LAUNCHPAD MODE** - Play notes live
+   - 16 pads trigger notes in real-time
+   - Polyphonic (up to 8 simultaneous voices)
+   - Octave shifting with BTN_OCTAVE
+   
+2. **SEQUENCER MODE** - Create sequences
+   - 16-step sequencer with 4 simultaneous tracks
+   - Press pads to toggle notes on/off
+   - Visual step grid on OLED
+   - BPM range: 60-180 (default 120)
+   
+3. **SETTINGS MODE** - Configure instruments and playback
+   - Select from 8 instrument presets
+   - Adjust BPM
+   - Start/stop playback
+   - Clear tracks
 
-2. **Pattern Sequencer**
-   - 16-step sequencer
-   - 4 patterns
-   - Per-step note entry (which of 16 samples to trigger)
-   - Tempo control (60-180 BPM range)
-   - Pattern chaining for song mode
+### 🎵 8 Instrument Presets
 
-3. **Built-in Lofi Sound Bank**
-   - Pre-load 8-12 essential samples into flash
-   - *(User needs to add sample data)*
+1. **Sine** - Pure sine wave
+2. **Square** - Classic square wave
+3. **Saw** - Sawtooth wave
+4. **Triangle** - Triangle wave
+5. **Pluck** - Plucked string sound
+6. **Bass** - Rich bass tone
+7. **Pad** - Layered pad sound
+8. **Lead** - Lead synth sound
 
-4. **Effects**
-   - **Bit crusher** (4→8→12→16 bit) - essential for lofi aesthetic
-   - **Low-pass filter** with resonance - warmth/muffling
+## Hardware Setup
 
-5. **UI/Controls**
-   - **Mode button**: Switch between Play/Pattern/Settings modes
-   - **Function button combinations**:
-     - Hold + key = adjust pitch/sample params
-     - Hold + mode = save/load pattern
-   - **LED feedback**: Step indicator (which of 16 steps is playing)
-   - **OLED display**: Current pattern/BPM, active effect settings
+### Components
+- ESP32-S3-WROOM-1U-N8R2 (8MB Flash, 2MB PSRAM)
+- PCM5102A DAC (I2S audio output)
+- SSD1306 OLED Display (128x64, I2C)
+- 4x4 Button Matrix (16 pads)
+- 2 Function Buttons
+- 4 Status LEDs
 
-## Building
+### Pin Connections
 
-This project uses PlatformIO.
+#### I2S Audio (PCM5102A)
+- **BCLK** → GPIO 6
+- **LRC** → GPIO 7
+- **DOUT** → GPIO 5
 
-1. Install PlatformIO
-2. Open project in PlatformIO
-3. Build: `pio run`
-4. Upload: `pio run -t upload`
+#### I2C Display (SSD1306)
+- **SDA** → GPIO 48
+- **SCL** → GPIO 47
 
-## Adding Samples
+#### Button Matrix
+- **Rows** → GPIO 4, 3, 8, 15
+- **Columns** → GPIO 16, 17, 18, 13
 
-To add the built-in lofi sound bank, you need to:
+#### Function Buttons
+- **BTN_MODE** → GPIO 36 (Mode cycling)
+- **BTN_OCTAVE** → GPIO 37 (Octave/Track selection)
 
-1. Convert your samples to:
-   - Format: 16-bit signed PCM
-   - Sample rate: 22kHz (for lofi aesthetic) or 44.1kHz
-   - Mono
+#### Status LEDs
+- **LED 1-4** → GPIO 9, 10, 11, 12
 
-2. Include them in your code. Example:
+## Controls
 
-```cpp
-// In loadDefaultSamples() function in main.cpp
-#include "samples.h" // Your sample data header
+### Button Functions
 
-// Load samples
-sampleEngine.loadSample(0, kick1_data, kick1_length, 22050);
-sampleEngine.loadSample(1, kick2_data, kick2_length, 22050);
-sampleEngine.loadSample(2, snare1_data, snare1_length, 22050);
-// ... etc
+| Button | Launchpad Mode | Sequencer Mode | Settings Mode |
+|--------|---------------|----------------|---------------|
+| **BTN_MODE** | Cycle to next mode | Cycle to next mode | Cycle to next mode |
+| **BTN_OCTAVE** | Shift octave up | Select track (1-4) | - |
+| **Pads 1-16** | Play notes | Toggle step on/off | Various settings |
+
+### Settings Mode Pad Functions
+
+| Pad | Function |
+|-----|----------|
+| 1-8 | Select instrument preset |
+| 13 | Decrease BPM (-5) |
+| 14 | Increase BPM (+5) |
+| 15 | Toggle Play/Stop |
+| 16 | Clear current track |
+
+## OLED Display
+
+The display shows different information based on the current mode:
+
+### Launchpad Mode
+```
+LAUNCHPAD        BPM:120
+Sine             Oct:4
 ```
 
-3. Create sample data header. You can use tools like:
-   - `xxd -i sample.wav > sample.h` (after extracting raw PCM)
-   - Online WAV to C array converters
-   - Custom Python script to convert WAV to C array
-
-## Documentation
-
-- **[USER_GUIDE.md](USER_GUIDE.md)** - Comprehensive user manual with tutorials, troubleshooting, and advanced techniques
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick reference card for easy access while using the device
-
-## Quick Usage
-
-### Play Mode
-- Press any key (0-15) to trigger the corresponding sample
-- Press OCTAVE to start/stop the sequencer
-- Hold OCTAVE + key to adjust pitch (when sequencer not playing)
-
-### Pattern Mode
-- Press key (0-15) to select/edit that step
-- Press OCTAVE + key to assign sample to step
-- Press MODE + key (0-3) to select pattern
-- Sequencer starts/stops automatically when pattern is playing
+### Sequencer Mode
+```
+SEQUENCER        BPM:120
+Sine      Trk:1  >
+━━━━━━━━━━━━━━━━━━━━
+[■][□][■][□][■][□][■][□]...
+> ····•·•·····•···
+  ·•··············
+  ················
+  ·•·•·•·•·•·•·•·•
+```
 
 ### Settings Mode
-- Press key 0-2 to select setting (BPM, BitCrusher, Filter)
-- Press key 4-15 to adjust value
-
-**For detailed instructions, see [USER_GUIDE.md](USER_GUIDE.md)**
-
-## Memory Strategy
-
-- **5MB**: Reserved for samples in SPIFFS partition (~30-60 seconds at 22kHz/16-bit)
-- **2MB**: Application code/UI (factory partition)
-- **2MB PSRAM**: Audio buffer/playback (runtime)
-- **~1MB**: Bootloader, NVS, PHY init data
-
-The custom partition table (`partitions.csv`) allocates:
-- `factory`: 2MB for application code
-- `samples`: 5MB SPIFFS filesystem for sample storage
-
-## Audio Architecture
-
 ```
-16 voices → Mixer → Bit crusher → Filter → I2S DAC
-           (polyphonic)    ↓          ↓
-                      Effect chain
+SETTINGS         BPM:120
+Sine
+━━━━━━━━━━━━━━━━━━━━
+Instruments:
+> Sine    Square
+  Saw     Triangle
+  Pluck   Bass
+  Pad     Lead
 ```
+
+## LED Indicators
+
+- **Launchpad/Settings Mode**: Shows active track (1-4)
+- **Sequencer Mode (Playing)**: Shows playback position (steps 1-4, 5-8, 9-12, 13-16)
+
+## Workflow Examples
+
+### Creating a Simple Beat
+
+1. Press **BTN_MODE** twice to enter **SEQUENCER MODE**
+2. Press **BTN_OCTAVE** to select Track 1
+3. Press pads 1, 5, 9, 13 to create a kick pattern
+4. Press **BTN_OCTAVE** to select Track 2
+5. Press pads 3, 7, 11, 15 to create a snare pattern
+6. Press **BTN_MODE** to enter **SETTINGS MODE**
+7. Press pad 15 to start playback
+
+### Live Performance
+
+1. Ensure you're in **LAUNCHPAD MODE** (press BTN_MODE until it shows)
+2. Press **BTN_MODE** then **SETTINGS MODE** to select an instrument
+3. Return to **LAUNCHPAD MODE**
+4. Press **BTN_OCTAVE** to change octaves
+5. Play the 16 pads like a keyboard
+
+### Layering Tracks
+
+1. Enter **SEQUENCER MODE**
+2. Select Track 1 (BTN_OCTAVE)
+3. Program your melody
+4. Press **BTN_MODE** → **SETTINGS MODE**
+5. Select a different instrument for Track 2
+6. Return to **SEQUENCER MODE**
+7. Select Track 2 (BTN_OCTAVE)
+8. Program a bassline
+9. Repeat for Tracks 3 and 4
+
+## Building & Uploading
+
+### Using PlatformIO
+
+```bash
+# Build the project
+pio run
+
+# Upload to ESP32-S3
+pio run --target upload
+
+# Monitor serial output
+pio device monitor
+```
+
+### Using Arduino IDE
+
+1. Install ESP32 board support
+2. Select board: "ESP32S3 Dev Module"
+3. Install library: U8g2
+4. Open `src/main.cpp`
+5. Upload to board
+
+## Technical Details
+
+### Audio Specifications
+- **Sample Rate**: 44.1 kHz
+- **Bit Depth**: 16-bit
+- **Polyphony**: 8 voices
+- **Buffer Size**: 256 samples
+- **Output**: Stereo I2S
+
+### Sequencer Specifications
+- **Steps**: 16 per track
+- **Tracks**: 4 simultaneous
+- **Resolution**: 16th notes
+- **BPM Range**: 60-180
+- **Note Range**: C2-C8 (7 octaves)
+
+### Memory Usage
+- **Flash**: ~200KB
+- **RAM**: ~50KB
+- **PSRAM**: Available for future expansion
+
+## Troubleshooting
+
+### No Audio Output
+- Check PCM5102A connections (BCLK, LRC, DOUT)
+- Verify I2S pins match your hardware
+- Ensure PCM5102A has power (3.3V or 5V depending on module)
+
+### Display Not Working
+- Verify I2C connections (SDA=48, SCL=47)
+- Check I2C address (default 0x3C)
+- Ensure display has power
+
+### Buttons Not Responding
+- Check row/column pin connections
+- Verify pullup resistors on column pins
+- Test with multimeter for continuity
+
+### Sequencer Not Playing
+- Press pad 15 in Settings Mode to start
+- Check that at least one step is programmed
+- Verify BPM is set correctly
 
 ## Future Enhancements
 
-- Sample recording
-- Live effects per pad
-- Swing/groove quantization
-- Multiple tracks
-- SD card sample loading
+- [ ] MIDI input/output
+- [ ] Pattern save/load to PSRAM
+- [ ] Effects (reverb, delay, filter)
+- [ ] Swing/groove settings
+- [ ] Song mode (chain patterns)
+- [ ] CV/Gate output
+- [ ] WiFi sync between multiple units
 
 ## License
 
-MIT
+MIT License - Feel free to modify and use in your projects!
+
+## Credits
+
+Created for ESP32-S3 hardware synthesizer project.

@@ -3,64 +3,35 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
-#include "config.h"
-#include "pins.h"
-#include "ButtonMatrix.h"
+#include "Config.h"
 #include "Sequencer.h"
-#include "Effects.h"
-#include "SampleEngine.h"
+#include "AudioEngine.h"
 
-class UI {
+// Font Constants (Issue #14)
+#define FONT_HEADER u8g2_font_ncenB10_tr
+#define FONT_BODY   u8g2_font_6x10_tf
+#define FONT_SMALL  u8g2_font_5x7_tf
+
+class SynthUI {
 public:
-    UI();
+    SynthUI(Sequencer& seq, AudioEngine& audio);
+    void init();
+    void draw(Mode currentMode);
     
-    void begin();
-    void update();
+    // Menu State (Managed by Main/Input, Displayed by UI)
+    int menuCursor = 0;
+    int menuScroll = 0;
     
-    void setMode(Mode mode);
-    Mode getMode() { return currentMode; }
-    
-    void setSequencer(Sequencer* seq) { sequencer = seq; }
-    void setEffects(Effects* eff) { effects = eff; }
-    void setSampleEngine(SampleEngine* eng) { sampleEngine = eng; }
-    void setButtonMatrix(ButtonMatrix* btn) { buttonMatrix = btn; }
-
 private:
-    U8G2_SSD1306_128X64_NONAME_F_HW_I2C display;
-    ButtonMatrix* buttonMatrix;
-    Sequencer* sequencer;
-    Effects* effects;
-    SampleEngine* sampleEngine;
+    Sequencer& sequencer;
+    AudioEngine& audioEngine;
+    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2; // Owned by UI
     
-    Mode currentMode;
-    unsigned long lastModeChange;
-    unsigned long lastDisplayUpdate;
-    static const unsigned long DISPLAY_UPDATE_INTERVAL = 50; // ms
-    
-    // UI state
-    uint8_t selectedPattern;
-    uint8_t selectedStep;
-    bool editingStep;
-    uint8_t selectedSample;
-    
-    // Settings mode state
-    uint8_t settingIndex; // 0=BPM, 1=BitCrusher, 2=Filter
-    bool adjustingValue;
-    
-    void updateDisplay();
-    void updateLEDs();
-    void handleInput();
-    
-    // Mode-specific handlers
-    void handlePlayMode();
-    void handlePatternMode();
-    void handleSettingsMode();
-    
-    // Display functions
-    void drawPlayScreen();
-    void drawPatternScreen();
-    void drawSettingsScreen();
-    void drawWaveform(int x, int y, int w, int h, Sample* sample);
+    void drawHeader(const char* title);
+    void drawSequencerMode();
+    void drawLaunchpadMode();
+    void drawSettingsMode();
+    void drawPlayIndicator(bool playing); // Issue #19
 };
 
-#endif // UI_H
+#endif

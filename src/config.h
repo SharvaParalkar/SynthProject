@@ -1,41 +1,80 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Hardware pin definitions
-#include "pins.h"
+#include <Arduino.h>
 
-// Audio configuration
-#define AUDIO_RATE         44100
-#define BITS_PER_SAMPLE    16
-#define MAX_VOICES         16
-#define MAX_SAMPLES        16
+// --- I2S Audio (PCM5102A) ---
+#define I2S_BCLK       6
+#define I2S_LRC        7
+#define I2S_DOUT       5
+#define I2S_NUM        I2S_NUM_0
+#define AUDIO_RATE     44100
+#define I2S_BUFFER_COUNT 8
+#define I2S_BUFFER_SIZE 256
 
-// Sequencer configuration
-#define STEPS_PER_PATTERN  16
-#define MAX_PATTERNS       4
-#define MIN_BPM            60
-#define MAX_BPM            180
-#define DEFAULT_BPM        120
+// --- I2C Display ---
+#define I2C_SDA        48
+#define I2C_SCL        47
+#define SCREEN_WIDTH   128
+#define SCREEN_HEIGHT  64
 
-// Sample configuration
-#define MAX_SAMPLE_LENGTH  44100  // 1 second at 44.1kHz
-#define DEFAULT_SAMPLE_RATE 22050 // For lofi aesthetic
+// --- Button Matrix ---
+// ROW_PINS: 4, 3, 8, 15
+// COL_PINS: 16, 17, 18, 13
+const int ROW_PINS[4] = {4, 3, 8, 15};
+const int COL_PINS[4] = {16, 17, 18, 13};
 
-// Effects configuration
-#define BIT_CRUSHER_BITS   8      // Default bit depth
-#define FILTER_CUTOFF_MIN  200
-#define FILTER_CUTOFF_MAX  20000
-#define FILTER_CUTOFF_DEFAULT 8000
+// --- Function Buttons ---
+#define BTN_MODE       36
+#define BTN_OCTAVE     37
+#define BTN_BOOT       0
 
-// UI configuration
-#define DEBOUNCE_MS        20
-#define LONG_PRESS_MS      500
+// --- Status LEDs ---
+const int LED_PINS[4] = {9, 10, 11, 12};
 
-// Mode enumeration
+// --- Audio Constants ---
+#define SAMPLE_RATE 44100
+#define POLYPHONY 8  // Configurable dynamic voice allocation could go here (Issue #40)
+
+// --- Mode Definitions ---
 enum Mode {
-    MODE_PLAY,      // Play samples directly
-    MODE_PATTERN,   // Edit/play patterns
-    MODE_SETTINGS   // Adjust tempo, effects, etc.
+  MODE_LAUNCHPAD,
+  MODE_SEQUENCER,
+  MODE_SETTINGS
 };
 
-#endif // CONFIG_H
+// --- Instrument Types ---
+enum Instrument {
+  INST_SINE,
+  INST_SQUARE,
+  INST_SAW,
+  INST_TRIANGLE,
+  INST_PLUCK,
+  INST_BASS,
+  INST_PAD,
+  INST_LEAD,
+  INST_COUNT
+};
+
+static const char* instrumentNames[] = {
+  "Sine", "Square", "Saw", "Triangle",
+  "Pluck", "Bass", "Pad", "Lead"
+};
+
+// --- Settings Menu Items ---
+enum SettingsMenuItem {
+  MENU_INSTRUMENT,
+  MENU_BPM,
+  MENU_PLAY_PAUSE,
+  MENU_CLEAR_TRACK,
+  MENU_ITEM_COUNT
+};
+
+static const char* menuItemNames[] = {
+  "Instrument",
+  "BPM",
+  "Play/Pause",
+  "Clear Track"
+};
+
+#endif

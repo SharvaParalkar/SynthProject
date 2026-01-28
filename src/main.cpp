@@ -1,193 +1,180 @@
 #include <Arduino.h>
-#include <driver/i2s.h>
-#include <string.h>
-#include <math.h>
-#include "config.h"
-#include "SampleEngine.h"
+#include "Config.h"
+#include "Hardware.h"
+#include "AudioEngine.h"
 #include "Sequencer.h"
-#include "Effects.h"
 #include "UI.h"
-#include "ButtonMatrix.h"
 
-// Global objects
-SampleEngine sampleEngine;
-Sequencer sequencer(&sampleEngine);
-Effects effects;
-ButtonMatrix buttonMatrix;
-UI ui;
+// Modules
+Hardware hardware;
+AudioEngine audioEngine;
+Sequencer sequencer(audioEngine);
+SynthUI ui(sequencer, audioEngine);
 
-// Forward declarations
-void loadDefaultSamples();
+// Application State
+Mode currentMode = MODE_LAUNCHPAD;
 
-// Audio buffer (using PSRAM)
-int16_t* audioBuffer = nullptr;
-const size_t BUFFER_SIZE = 512; // Samples per buffer
+// buffers
+int16_t audioBuffer[I2S_BUFFER_SIZE * 2]; // Stereo
 
-// I2S configuration
-i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate = AUDIO_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = BUFFER_SIZE,
-    .use_apll = false,
-    .tx_desc_auto_clear = true,
-    .fixed_mclk = 0
-};
-
-i2s_pin_config_t pin_config = {
-    .bck_io_num = I2S_BCLK,
-    .ws_io_num = I2S_LRC,
-    .data_out_num = I2S_DOUT,
-    .data_in_num = I2S_PIN_NO_CHANGE
-};
+void handleInput() {
+    hardware.scanButtons();
+    
+    // Mode Switching
+    if (hardware.isModeJustPressed()) {
+        currentMode = (Mode)((currentMode + 1) % 3);
+        audioEngine.killAll();
+        // Force Display Update
+        ui.draw(currentMode); // Immediate feedback (Issue #21/23)
+        return;
+    }
+    
+    // Octave / Function
+    if (hardware.isOctaveJustPressed()) {
+        if (currentMode == MODE_LAUNCHPAD) {
+            int oct = sequencer.getCurrentOctave();
+            oct = (oct + 1) % 7;
+            if (oct == 0) oct = 2;
+            sequencer.setCurrentOctave(oct);
+        } else if (currentMode == MODE_SEQUENCER) {
+            int trk = sequencer.getCurrentTrack();
+            sequencer.setCurrentTrack((trk + 1) % 4);
+        }
+    }
+    
+    // Matrix Handling
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            if (hardware.isPadJustPressed(r, c)) {
+                int padIndex = r * 4 + c;
+                
+                if (currentMode == MODE_LAUNCHPAD) {
+                    // Play Note
+                    int note = 36 + padIndex + (sequencer.getCurrentOctave() * 12);
+                    // Use track instrument or default?
+                    // Old code used 'currentInstrument'. 
+                    // Let's use the instrument of the CURRENT TRACK.
+                    Instrument inst = sequencer.getInstrument(sequencer.getCurrentTrack());
+                    audioEngine.noteOn(note, inst);
+                    
+                } else if (currentMode == MODE_SEQUENCER) {
+                    // Toggle Step
+                    sequencer.toggleStep(sequencer.getCurrentTrack(), padIndex);
+                    
+                } else if (currentMode == MODE_SETTINGS) {
+                    // Menu Navigation
+                    // 0: Up, 1: Down, 3: Select (User Requested)
+                    if (padIndex == 0) {
+                        ui.menuCursor--;
+                        if (ui.menuCursor < 0) {
+                            ui.menuCursor = MENU_ITEM_COUNT - 1;
+                            ui.menuScroll = max(0, ui.menuCursor - 2);
+                        } else if (ui.menuCursor < ui.menuScroll) {
+                            ui.menuScroll = ui.menuCursor;
+                        }
+                    } else if (padIndex == 1) { // Changed from 2 to 1 (User Request)
+                        ui.menuCursor++;
+                        if (ui.menuCursor >= MENU_ITEM_COUNT) {
+                            ui.menuCursor = 0;
+                            ui.menuScroll = 0;
+                        } else if (ui.menuCursor >= ui.menuScroll + 3) {
+                            ui.menuScroll = ui.menuCursor - 2;
+                        }
+                    } else if (padIndex == 2) { // Changed to 2 (User Request)
+                        // Select
+                        int item = ui.menuCursor;
+                         if (item == MENU_INSTRUMENT) {
+                            int trk = sequencer.getCurrentTrack();
+                            Instrument inst = sequencer.getInstrument(trk);
+                            inst = (Instrument)((inst + 1) % INST_COUNT);
+                            sequencer.setInstrument(trk, inst);
+                         } else if (item == MENU_BPM) {
+                             int b = sequencer.getBPM();
+                             b += 20;
+                             if (b > 180) b = 60;
+                             sequencer.setBPM(b);
+                         } else if (item == MENU_PLAY_PAUSE) {
+                             sequencer.togglePlay();
+                         } else if (item == MENU_CLEAR_TRACK) {
+                             sequencer.clearTrack(sequencer.getCurrentTrack());
+                             // Fix: Reset cursor to top (User Request)
+                             ui.menuCursor = 0;
+                             ui.menuScroll = 0;
+                         }
+                    } 
+                    // Moved Fine tune from 2 to 3
+                     else if (padIndex == 3 && ui.menuCursor == MENU_BPM) {
+                         sequencer.setBPM(max(60, sequencer.getBPM() - 5));
+                     } else if (padIndex == 4 && ui.menuCursor == MENU_BPM) {
+                         sequencer.setBPM(min(180, sequencer.getBPM() + 5));
+                     }
+                }
+            }
+        }
+    }
+}
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
-    Serial.println("Lofi Beat Maker Starting...");
-
-    // Allocate audio buffer in PSRAM
-    if (psramFound()) {
-        audioBuffer = (int16_t*)ps_malloc(BUFFER_SIZE * sizeof(int16_t));
-        Serial.printf("PSRAM found, allocated %d bytes\n", BUFFER_SIZE * sizeof(int16_t));
-    } else {
-        audioBuffer = (int16_t*)malloc(BUFFER_SIZE * sizeof(int16_t));
-        Serial.println("PSRAM not found, using heap");
-    }
-
-    if (!audioBuffer) {
-        Serial.println("Failed to allocate audio buffer!");
-        while(1) delay(1000);
-    }
-
-    // Initialize I2S
-    esp_err_t err = i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL);
-    if (err != ESP_OK) {
-        Serial.printf("I2S driver install failed: %d\n", err);
-    } else {
-        Serial.println("I2S driver installed successfully");
-    }
+    delay(500);
+    Serial.println("Booting Modular Synth...");
     
-    err = i2s_set_pin(I2S_NUM, &pin_config);
-    if (err != ESP_OK) {
-        Serial.printf("I2S pin config failed: %d\n", err);
-    } else {
-        Serial.println("I2S pins configured");
-    }
+    // Init Modules
+    hardware.init();
+    ui.init();
+    audioEngine.init();
+    sequencer.init();
     
-    i2s_zero_dma_buffer(I2S_NUM);
-    Serial.println("I2S initialized");
-
-    // Initialize components
-    sampleEngine.begin();
-    sequencer.begin();
-    effects.begin();
-    buttonMatrix.begin();
-    
-    // Wire up UI references
-    ui.setSequencer(&sequencer);
-    ui.setEffects(&effects);
-    ui.setSampleEngine(&sampleEngine);
-    ui.setButtonMatrix(&buttonMatrix);
-    ui.begin();
-
-    // Load default samples (placeholder - user needs to add actual samples)
-    loadDefaultSamples();
-
-    Serial.println("Initialization complete!");
-    Serial.println("Ready to make beats!");
+    ui.draw(currentMode);
 }
 
 void loop() {
-    // Update UI (handles button scanning, display, LEDs)
-    ui.update();
-
-    // Update sequencer
+    // 1. Audio Generation (Highest Priority)
+    // Fill buffer
+    // BUFFER_SIZE (256) samples per channel. 
+    // generate takes frames?
+    // main.cpp: generateAudio(buffer, BUFFER_SIZE/2) -> 128 frames.
+    // audioBuffer is int16_t * 2 * 256?
+    // Old code: int16_t audioBuffer[BUFFER_SIZE]; generate(..., BUFFER_SIZE/2). 
+    // And BUFFER_SIZE was 256. 
+    // So 128 stereo frames.
+    // Config.h: I2S_BUFFER_SIZE 256.
+    
+    memset(audioBuffer, 0, sizeof(audioBuffer));
+    audioEngine.generate(audioBuffer, I2S_BUFFER_SIZE / 2);
+    
+    // 2. Output
+    // Size in bytes: I2S_BUFFER_SIZE * 2 (stereo) * 2 (bytes) ? Or is BUFFER_SIZE total samples (L+R)?
+    // Old code: i2s_write(..., BUFFER_SIZE * sizeof(int16_t)...)
+    // So BUFFER_SIZE was total individual samples (L+R). 
+    // Which means 128 frames.
+    hardware.writeAudio(audioBuffer, I2S_BUFFER_SIZE * sizeof(int16_t));
+    
+    // 3. Inputs (Throttled)
+    static int inputDiv = 0;
+    if (++inputDiv >= 4) { // Every ~25ms
+        handleInput();
+        inputDiv = 0;
+    }
+    
+    // 4. Logic
     sequencer.update();
-
-    // Generate audio buffer
-    memset(audioBuffer, 0, BUFFER_SIZE * sizeof(int16_t));
     
-    // Mix all active voices
-    sampleEngine.render(audioBuffer, BUFFER_SIZE);
-
-    // Apply effects
-    effects.process(audioBuffer, BUFFER_SIZE);
-
-    // Send to I2S
-    size_t bytes_written;
-    esp_err_t err = i2s_write(I2S_NUM, audioBuffer, BUFFER_SIZE * sizeof(int16_t), &bytes_written, portMAX_DELAY);
-    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-        static unsigned long lastError = 0;
-        if (millis() - lastError > 1000) { // Print error max once per second
-            Serial.printf("I2S write error: %d, bytes_written: %d\n", err, bytes_written);
-            lastError = millis();
-        }
-    }
-}
-
-// Generate a simple test tone (sine wave) for testing audio output
-void generateTestTone(int16_t* buffer, size_t length, float frequency, float sampleRate) {
-    float phase = 0.0f; // Start from 0 each time (not static)
-    float phaseIncrement = (frequency * 2.0f * PI) / sampleRate;
-    
-    for (size_t i = 0; i < length; i++) {
-        buffer[i] = (int16_t)(sin(phase) * 20000.0f); // ~60% volume
-        phase += phaseIncrement;
-        if (phase >= 2.0f * PI) phase -= 2.0f * PI;
-    }
-}
-
-// Placeholder function - user needs to implement with actual sample data
-void loadDefaultSamples() {
-    // Generate test tones for all 16 keys (chromatic scale starting from C4)
-    // Frequencies: C4, C#4, D4, D#4, E4, F4, F#4, G4, G#4, A4, A#4, B4, C5, C#5, D5, D#5
-    const float baseFreq = 261.63f; // C4
-    const size_t testToneLength = AUDIO_RATE * 2; // 2 seconds - longer to avoid immediate fade
-    
-    Serial.println("Loading test tones for all 16 keys...");
-    
-    for (uint8_t key = 0; key < MAX_SAMPLES; key++) {
-        // Calculate frequency: each key is one semitone higher
-        float frequency = baseFreq * powf(2.0f, key / 12.0f);
-        
-        int16_t* testTone = (int16_t*)malloc(testToneLength * sizeof(int16_t));
-        
-        if (testTone) {
-            generateTestTone(testTone, testToneLength, frequency, (float)AUDIO_RATE);
-            if (sampleEngine.loadSample(key, testTone, testToneLength, AUDIO_RATE)) {
-                Serial.printf("Test tone %d loaded: %.2f Hz\n", key, frequency);
-            } else {
-                Serial.printf("Failed to load test tone %d\n", key);
-            }
-            // Note: We don't free testTone here because loadSample copies it
-            // The SampleEngine will manage the memory
+    // 5. LEDs
+    static int ledDiv = 0;
+    if (++ledDiv >= 8) {
+        if (currentMode == MODE_SEQUENCER && sequencer.isPlayingState()) {
+            hardware.setStepLEDs(sequencer.getCurrentStep());
         } else {
-            Serial.printf("Failed to allocate test tone buffer for key %d\n", key);
+            hardware.setGroupLEDs(sequencer.getCurrentTrack());
         }
+        ledDiv = 0;
     }
     
-    // Auto-trigger the first test tone (C4) on startup
-    sampleEngine.triggerSample(0, 0.0f);
-    Serial.println("Test tone 0 (C4) triggered on startup");
-    
-    // TODO: Load built-in lofi samples
-    // This should load 8-12 essential samples:
-    // - Kick (2 variations)
-    // - Snare (2 variations)
-    // - Hi-hat (closed/open)
-    // - Clap
-    // - Bass note (one-shot)
-    // - Melodic sample (vinyl chord/keys)
-    // - Vinyl crackle/noise loop
-    
-    // Example structure (user needs to add actual sample data):
-    // int16_t kickSample[] = { ... }; // Sample data
-    // sampleEngine.loadSample(1, kickSample, sizeof(kickSample)/sizeof(int16_t), 22050);
-    
-    Serial.println("Sample loading complete - test tones available in all 16 slots");
+    // 6. Display (Low Priority)
+    static int dispDiv = 0;
+    if (++dispDiv >= 30) { // Every ~200ms
+        ui.draw(currentMode);
+        dispDiv = 0;
+    }
 }

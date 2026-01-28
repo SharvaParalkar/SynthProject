@@ -1,151 +1,124 @@
 #include "Sequencer.h"
 
-Sequencer::Sequencer(SampleEngine* engine) : sampleEngine(engine) {
-    playing = false;
-    currentPattern = 0;
+Sequencer::Sequencer(AudioEngine& audio) : audioEngine(audio) {
+    bpm = 120;
+    isPlaying = false;
     currentStep = 0;
-    bpm = DEFAULT_BPM;
+    currentTrack = 0;
+    currentOctave = 4;
     lastStepTime = 0;
-    stepInterval = 0;
-    chainLength = 0;
-    chainPosition = 0;
+}
+
+void Sequencer::init() {
+    memset(sequence, 0, sizeof(sequence));
+    memset(stepNotes, 0, sizeof(stepNotes));
     
-    // Initialize all patterns
-    for (int p = 0; p < MAX_PATTERNS; p++) {
-        patterns[p].length = STEPS_PER_PATTERN;
-        for (int s = 0; s < STEPS_PER_PATTERN; s++) {
-            patterns[p].steps[s].sampleIndex = 255; // Empty
-            patterns[p].steps[s].pitch = 0.0f;
-            patterns[p].steps[s].active = false;
-        }
-    }
-}
-
-void Sequencer::begin() {
-    calculateStepInterval();
-}
-
-void Sequencer::calculateStepInterval() {
-    // Calculate microseconds per step
-    // At 120 BPM: 60 seconds / 120 beats = 0.5 seconds per beat
-    // 16 steps per beat = 0.5 / 16 = 0.03125 seconds = 31250 microseconds
-    float beatsPerSecond = bpm / 60.0f;
-    float stepsPerSecond = beatsPerSecond * 4.0f; // 16 steps = 4 beats
-    stepInterval = (unsigned long)(1000000.0f / stepsPerSecond);
-}
-
-void Sequencer::start() {
-    playing = true;
-    currentStep = 0;
-    lastStepTime = micros();
-    triggerStep();
-}
-
-void Sequencer::stop() {
-    playing = false;
-    currentStep = 0;
-    chainPosition = 0;
-    sampleEngine->releaseAll();
-}
-
-void Sequencer::pause() {
-    playing = false;
-}
-
-void Sequencer::setBPM(uint8_t newBPM) {
-    bpm = constrain(newBPM, MIN_BPM, MAX_BPM);
-    calculateStepInterval();
-}
-
-void Sequencer::setCurrentPattern(uint8_t pattern) {
-    if (pattern < MAX_PATTERNS) {
-        currentPattern = pattern;
-    }
-}
-
-void Sequencer::setStep(uint8_t pattern, uint8_t step, uint8_t sampleIndex, float pitch) {
-    if (pattern >= MAX_PATTERNS || step >= STEPS_PER_PATTERN) return;
-    
-    Step* s = &patterns[pattern].steps[step];
-    s->sampleIndex = sampleIndex;
-    s->pitch = constrain(pitch, -12.0f, 12.0f);
-    s->active = (sampleIndex < MAX_SAMPLES);
-}
-
-void Sequencer::toggleStep(uint8_t pattern, uint8_t step) {
-    if (pattern >= MAX_PATTERNS || step >= STEPS_PER_PATTERN) return;
-    
-    Step* s = &patterns[pattern].steps[step];
-    s->active = !s->active;
-}
-
-void Sequencer::clearStep(uint8_t pattern, uint8_t step) {
-    if (pattern >= MAX_PATTERNS || step >= STEPS_PER_PATTERN) return;
-    
-    Step* s = &patterns[pattern].steps[step];
-    s->sampleIndex = 255;
-    s->active = false;
-}
-
-void Sequencer::clearPattern(uint8_t pattern) {
-    if (pattern >= MAX_PATTERNS) return;
-    
-    for (int s = 0; s < STEPS_PER_PATTERN; s++) {
-        clearStep(pattern, s);
-    }
-}
-
-void Sequencer::setChain(uint8_t* chainArray, uint8_t length) {
-    chainLength = min(length, (uint8_t)MAX_PATTERNS);
-    for (int i = 0; i < chainLength; i++) {
-        chain[i] = chainArray[i];
-    }
-    chainPosition = 0;
-}
-
-void Sequencer::clearChain() {
-    chainLength = 0;
-    chainPosition = 0;
-}
-
-void Sequencer::triggerStep() {
-    Pattern* pattern = &patterns[currentPattern];
-    Step* step = &pattern->steps[currentStep];
-    
-    if (step->active && step->sampleIndex < MAX_SAMPLES) {
-        sampleEngine->triggerSample(step->sampleIndex, step->pitch);
-    }
-}
-
-void Sequencer::advanceStep() {
-    currentStep++;
-    
-    // Check if pattern finished
-    if (currentStep >= patterns[currentPattern].length) {
-        currentStep = 0;
-        
-        // Handle pattern chaining
-        if (chainLength > 0) {
-            chainPosition++;
-            if (chainPosition >= chainLength) {
-                chainPosition = 0;
-            }
-            currentPattern = chain[chainPosition];
-        }
-    }
+    trackInstruments[0] = INST_SINE;
+    trackInstruments[1] = INST_SQUARE;
+    trackInstruments[2] = INST_SAW;
+    trackInstruments[3] = INST_TRIANGLE;
 }
 
 void Sequencer::update() {
-    if (!playing) return;
+    if (!isPlaying) return;
     
-    unsigned long now = micros();
-    if (now - lastStepTime >= stepInterval) {
+    unsigned long stepDuration = (60000 / bpm) / 4;
+    unsigned long now = millis();
+    
+    if (now - lastStepTime >= stepDuration) {
+        currentStep = (currentStep + 1) % 16;
         lastStepTime = now;
         
-        // Trigger current step
-        triggerStep();
-        
-        // Advance to next step
-        advanceStep();
+        for (int track = 0; track < 4; track++) {
+            if (sequence[track][currentStep]) {
+                audioEngine.noteOn(stepNotes[track][currentStep], trackInstruments[track]);
+            }
+        }
     }
 }
+
+void Sequencer::start() {
+    isPlaying = true;
+    currentStep = 15; // So next update hits 0
+    lastStepTime = millis(); // Force immediate update? Or wait.
+    // Actually, usually we want immediate start.
+    currentStep = -1; // Next is 0
+    // But logic above: `if (now - last >= duration)`. 
+    // To start immediately, set lastStepTime to past.
+    lastStepTime = millis() - (60000 / bpm) / 4; 
+}
+
+void Sequencer::stop() {
+    isPlaying = false;
+    currentStep = 0;
+    audioEngine.killAll(); // Optional: silence on stop
+}
+
+void Sequencer::togglePlay() {
+    if (isPlaying) stop();
+    else start();
+}
+
+void Sequencer::setBPM(int newBpm) {
+    bpm = constrain(newBpm, 60, 240);
+}
+
+int Sequencer::getBPM() {
+    return bpm;
+}
+
+void Sequencer::setInstrument(int track, Instrument inst) {
+    if (track >= 0 && track < 4) {
+        trackInstruments[track] = inst;
+    }
+}
+
+Instrument Sequencer::getInstrument(int track) {
+    if (track >= 0 && track < 4) return trackInstruments[track];
+    return INST_SINE;
+}
+
+void Sequencer::clearTrack(int track) {
+    if (track >= 0 && track < 4) {
+        for (int i=0; i<16; i++) sequence[track][i] = false;
+    }
+}
+
+void Sequencer::toggleStep(int track, int step) {
+    if (track >= 0 && track < 4 && step >= 0 && step < 16) {
+        sequence[track][step] = !sequence[track][step];
+        if (sequence[track][step]) {
+            // Set note with current octave
+            // Base C2 = 36. 
+            // Pad index logic from main: 36 + padIndex + (oct * 12).
+            // Here 'step' is the pad index for the sequence step. 
+            // Wait, "Launchpad" mode maps pads to notes. "Sequencer" mode maps pads to steps.
+            // The note pitch for a step is usually fixed or set by the user. 
+            // Original code: `stepNotes[currentTrack][padIndex] = 36 + padIndex + (currentOctave * 12);`
+            // This implies the pitch depends on *which step* button you press?
+            // "Sequencer ... Toggle scale in sequence". 
+            // "If sequence... set note ... = 36 + padIndex...".
+            // Yes, it seems pitch is tied to the step index (making it an arpeggiator?) or just mapping.
+            // Actually, usually a sequencer step has a pitch. 
+            // If the user presses button 0 (Step 1), it sets the note for Step 1.
+            // What note? The code says `36 + padIndex`. So Step 1 is C, Step 2 is C#, etc.?
+            // Yes, likely.
+            
+            stepNotes[track][step] = 36 + step + (currentOctave * 12);
+        }
+    }
+}
+
+bool Sequencer::getStep(int track, int step) {
+    if (track >= 0 && track < 4 && step >= 0 && step < 16) {
+        return sequence[track][step];
+    }
+    return false;
+}
+
+int Sequencer::getCurrentStep() { return currentStep; }
+int Sequencer::getCurrentTrack() { return currentTrack; }
+void Sequencer::setCurrentTrack(int track) { currentTrack = track % 4; }
+int Sequencer::getCurrentOctave() { return currentOctave; }
+void Sequencer::setCurrentOctave(int oct) { currentOctave = constrain(oct, 1, 7); }
+bool Sequencer::isPlayingState() { return isPlaying; }

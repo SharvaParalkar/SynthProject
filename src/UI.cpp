@@ -1,322 +1,177 @@
 #include "UI.h"
-#include <stdio.h>
 #include <Wire.h>
 
-UI::UI() : display(U8G2_R0, U8X8_PIN_NONE, U8X8_PIN_NONE, U8X8_PIN_NONE) {
-    currentMode = MODE_PLAY;
-    lastModeChange = 0;
-    lastDisplayUpdate = 0;
-    selectedPattern = 0;
-    selectedStep = 0;
-    editingStep = false;
-    selectedSample = 0;
-    settingIndex = 0;
-    adjustingValue = false;
-    buttonMatrix = nullptr;
-    sequencer = nullptr;
-    effects = nullptr;
-    sampleEngine = nullptr;
+SynthUI::SynthUI(Sequencer& seq, AudioEngine& audio) 
+    : sequencer(seq), audioEngine(audio), u8g2(U8G2_R0, U8X8_PIN_NONE) {
 }
 
-void UI::begin() {
-    // Initialize I2C
+void SynthUI::init() {
+    // Initialize I2C with defined pins
     Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(400000); // 400kHz
     
-    // Initialize display
-    display.begin();
-    display.setFont(u8g2_font_6x10_tf);
-    display.setFontRefHeightExtendedText();
-    display.setDrawColor(1);
-    display.setFontPosTop();
-    display.setFontDirection(0);
-    
-    // Initialize LEDs
-    for (int i = 0; i < 4; i++) {
-        pinMode(LED_PINS[i], OUTPUT);
-        digitalWrite(LED_PINS[i], LOW);
+    u8g2.setI2CAddress(0x3C << 1);
+    if (!u8g2.begin()) {
+        Serial.println("Display failed!");
     }
-    
-    Serial.println("UI initialized");
+    u8g2.setContrast(255);
 }
 
-void UI::setMode(Mode mode) {
-    if (mode != currentMode) {
-        currentMode = mode;
-        lastModeChange = millis();
-        Serial.printf("Mode changed to: %d\n", mode);
-    }
-}
-
-void UI::update() {
-    if (!buttonMatrix) return;
+void SynthUI::draw(Mode currentMode) {
+    u8g2.clearBuffer();
     
-    buttonMatrix->update();
-    handleInput();
+    // Header is commonish
+    u8g2.setFont(FONT_BODY);
     
-    // Update display periodically
-    unsigned long now = millis();
-    if (now - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
-        updateDisplay();
-        updateLEDs();
-        lastDisplayUpdate = now;
-    }
-}
-
-void UI::handleInput() {
-    // Mode switching
-    if (buttonMatrix->wasModePressed()) {
-        Mode nextMode = (Mode)((currentMode + 1) % 3);
-        setMode(nextMode);
-        return;
-    }
-    
-    // Mode-specific input handling
     switch (currentMode) {
-        case MODE_PLAY:
-            handlePlayMode();
-            break;
-        case MODE_PATTERN:
-            handlePatternMode();
-            break;
-        case MODE_SETTINGS:
-            handleSettingsMode();
-            break;
+        case MODE_LAUNCHPAD: drawLaunchpadMode(); break;
+        case MODE_SEQUENCER: drawSequencerMode(); break;
+        case MODE_SETTINGS:  drawSettingsMode(); break;
     }
+    
+    u8g2.sendBuffer();
 }
 
-void UI::handlePlayMode() {
-    if (!sequencer || !sampleEngine) return;
+void SynthUI::drawLaunchpadMode() {
+    u8g2.setFont(FONT_BODY);
+    u8g2.drawStr(0, 10, "Launchpad"); // Issue #22: Title Case
     
-    // OCTAVE button = start/stop sequencer
-    if (buttonMatrix->wasOctavePressed()) {
-        if (sequencer->isPlaying()) {
-            sequencer->stop();
+    // Status Bar
+    u8g2.drawLine(0, 12, 128, 12);
+    
+    u8g2.drawStr(0, 24, instrumentNames[sequencer.getInstrument(sequencer.getCurrentTrack())]); // Actually assumes track 0 or global inst? 
+    // In Launchpad mode, main.cpp used 'currentInstrument'.
+    // We should probably expose 'currentInstrument' or use Track 0's.
+    // For now, let's assume we display the instrument of the selected track or just "Live".
+    
+    // Octave (Right Aligned)
+    char buf[16];
+    sprintf(buf, "Oct:%d", sequencer.getCurrentOctave());
+    int w = u8g2.getStrWidth(buf);
+    u8g2.drawStr(128 - w - 2, 24, buf); // Issue #11
+    
+    // Vizualizer?
+    // Maybe show active notes?
+}
+
+void SynthUI::drawSequencerMode() {
+    // Header
+    u8g2.setFont(FONT_BODY);
+    u8g2.drawStr(0, 10, "Sequencer");
+    
+    // BPM (Right Aligned)
+    char buf[16];
+    sprintf(buf, "BPM:%d", sequencer.getBPM());
+    int w = u8g2.getStrWidth(buf);
+    u8g2.drawStr(128 - w - 2, 10, buf);
+    
+    // Track Info
+    sprintf(buf, "Trk:%d", sequencer.getCurrentTrack() + 1);
+    u8g2.drawStr(0, 22, buf);
+    
+    // Instrument Name
+    Instrument inst = sequencer.getInstrument(sequencer.getCurrentTrack());
+    u8g2.drawStr(40, 22, instrumentNames[inst]);
+    
+    // Play Indicator (Issue #19)
+    drawPlayIndicator(sequencer.isPlayingState());
+    
+    // Grid (Issue #12: Y-positioning)
+    // Issue #18: Aspect Ratio (Square boxes)
+    int gridY = 32;
+    for (int i = 0; i < 16; i++) {
+        int x = i * 8;
+        // 6x6 Box
+        if (sequencer.getStep(sequencer.getCurrentTrack(), i)) {
+            u8g2.drawBox(x, gridY, 6, 6);
         } else {
-            sequencer->start();
+            u8g2.drawFrame(x, gridY, 6, 6);
+        }
+        
+        // Highlight Current Step (Issue #13: Highlight)
+        if (i == sequencer.getCurrentStep() && sequencer.isPlayingState()) {
+             // Draw underline or frame outside
+             u8g2.drawHLine(x, gridY + 8, 6);
+             // Or frame
+             // u8g2.drawFrame(x-1, gridY-1, 8, 8);
         }
     }
     
-    // Check for button presses (0-15)
-    for (int i = 0; i < 16; i++) {
-        if (buttonMatrix->wasPressed(i)) {
-            // Trigger sample directly
-            sampleEngine->triggerSample(i, 0.0f);
+    // Track Overview (Issue #20: Visibility)
+    int overviewY = 46;
+    for (int trk = 0; trk < 4; trk++) {
+        int y = overviewY + (trk * 4);
+        
+        // Track Indication
+        if (trk == sequencer.getCurrentTrack()) {
+            u8g2.drawStr(0, y+4, ">"); 
         }
-    }
-    
-    // Hold OCTAVE + button = adjust pitch (when sequencer not playing)
-    if (buttonMatrix->isOctavePressed() && !sequencer->isPlaying()) {
-        for (int i = 0; i < 16; i++) {
-            if (buttonMatrix->wasPressed(i)) {
-                // Could implement pitch adjustment here
+        
+        for (int s = 0; s < 16; s++) {
+            if (sequencer.sequence[trk][s]) {
+                // Issue #20: 2x2 pixels
+                u8g2.drawBox(10 + s * 7, y, 2, 2); 
             }
         }
     }
 }
 
-void UI::handlePatternMode() {
-    if (!sequencer) return;
+void SynthUI::drawSettingsMode() {
+    u8g2.setFont(FONT_BODY);
+    u8g2.drawStr(0, 10, "Settings");
+    u8g2.drawLine(0, 12, 128, 12);
     
-    // Button 0-15 = select step or toggle step
-    for (int i = 0; i < 16; i++) {
-        if (buttonMatrix->wasPressed(i)) {
-            if (editingStep && selectedStep == i) {
-                // Toggle step
-                sequencer->toggleStep(selectedPattern, i);
-            } else {
-                // Select step
-                selectedStep = i;
-                editingStep = true;
-            }
-        }
+    // Scroll Indicators (Issue #17)
+    if (menuScroll > 0) {
+        u8g2.drawStr(116, 24, "^");
     }
     
-    // OCTAVE + button = select sample for step
-    if (buttonMatrix->isOctavePressed() && editingStep) {
-        for (int i = 0; i < 16; i++) {
-            if (buttonMatrix->wasPressed(i)) {
-                sequencer->setStep(selectedPattern, selectedStep, i, 0.0f);
-            }
-        }
-    }
-    
-    // MODE + button = select pattern
-    if (buttonMatrix->isModePressed()) {
-        for (int i = 0; i < 4; i++) {
-            if (buttonMatrix->wasPressed(i)) {
-                selectedPattern = i;
-                sequencer->setCurrentPattern(i);
-            }
-        }
-    }
-}
-
-void UI::handleSettingsMode() {
-    if (!sequencer || !effects) return;
-    
-    // Button 0-2 = select setting (BPM, BitCrusher, Filter)
     for (int i = 0; i < 3; i++) {
-        if (buttonMatrix->wasPressed(i)) {
-            settingIndex = i;
-            adjustingValue = true;
-        }
-    }
-    
-    // Buttons 4-15 = adjust value
-    if (adjustingValue) {
-        for (int i = 4; i < 16; i++) {
-            if (buttonMatrix->wasPressed(i)) {
-                int value = i - 4; // 0-11
-                
-                switch (settingIndex) {
-                    case 0: // BPM
-                        sequencer->setBPM(MIN_BPM + (value * 10)); // 60-170 in steps of 10
-                        break;
-                    case 1: // BitCrusher bits
-                        effects->setBitCrusherBits(4 + value); // 4-15 bits
-                        effects->enableBitCrusher(value > 0);
-                        break;
-                    case 2: // Filter cutoff (rough)
-                        {
-                            float cutoff = FILTER_CUTOFF_MIN + (value * (FILTER_CUTOFF_MAX - FILTER_CUTOFF_MIN) / 12.0f);
-                            effects->setFilterCutoff(cutoff);
-                            effects->enableFilter(value > 0);
-                        }
-                        break;
-                }
-            }
-        }
-    }
-}
-
-void UI::updateLEDs() {
-    if (!sequencer) return;
-    
-    // LED 0-3 show current step (binary)
-    uint8_t currentStep = sequencer->getCurrentStep();
-    for (int i = 0; i < 4; i++) {
-        digitalWrite(LED_PINS[i], (currentStep >> i) & 1);
-    }
-}
-
-void UI::updateDisplay() {
-    display.clearBuffer();
-    
-    switch (currentMode) {
-        case MODE_PLAY:
-            drawPlayScreen();
-            break;
-        case MODE_PATTERN:
-            drawPatternScreen();
-            break;
-        case MODE_SETTINGS:
-            drawSettingsScreen();
-            break;
-    }
-    
-    display.sendBuffer();
-}
-
-void UI::drawPlayScreen() {
-    display.setFont(u8g2_font_6x10_tf);
-    display.drawStr(0, 0, "PLAY MODE");
-    
-    if (sequencer) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "BPM: %d", sequencer->getBPM());
-        display.drawStr(0, 12, buf);
+        int itemIndex = menuScroll + i;
+        if (itemIndex >= MENU_ITEM_COUNT) break;
         
-        snprintf(buf, sizeof(buf), "Pattern: %d", sequencer->getCurrentPattern());
-        display.drawStr(0, 24, buf);
+        int y = 24 + (i * 12);
         
-        if (sequencer->isPlaying()) {
-            display.drawStr(0, 36, "PLAYING");
-        } else {
-            display.drawStr(0, 36, "STOPPED");
+        if (itemIndex == menuCursor) {
+            u8g2.drawStr(0, y, ">");
         }
+        
+        u8g2.drawStr(10, y, menuItemNames[itemIndex]);
+        
+        // Value (Right Aligned - Issue #16)
+        char val[32];
+        if (itemIndex == MENU_INSTRUMENT) {
+            // Need global current instrument? 
+            // In main logic, Settings changes 'currentInstrument' or Track Instrument.
+            // Let's assume we display current generic instrument name
+            // But 'currentInstrument' state is logically in Main or Sequencer.
+            // For now, placeholder. Main will need to pass this or we use Sequencer's current track inst.
+            sprintf(val, "%s", instrumentNames[sequencer.getInstrument(sequencer.getCurrentTrack())]);
+        } else if (itemIndex == MENU_BPM) {
+            sprintf(val, "%d", sequencer.getBPM());
+        } else if (itemIndex == MENU_PLAY_PAUSE) {
+            sprintf(val, "%s", sequencer.isPlayingState() ? "Play" : "Stop");
+        } else if (itemIndex == MENU_CLEAR_TRACK) {
+            sprintf(val, "Trk%d", sequencer.getCurrentTrack()+1);
+        }
+        
+        int w = u8g2.getStrWidth(val);
+        u8g2.drawStr(128 - w - 12, y, val); // -12 for scroll bar space
+    }
+    
+    if (menuScroll + 3 < MENU_ITEM_COUNT) {
+        u8g2.drawStr(116, 60, "v");
     }
 }
 
-void UI::drawPatternScreen() {
-    display.setFont(u8g2_font_6x10_tf);
-    display.drawStr(0, 0, "PATTERN MODE");
-    
-    if (sequencer) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "P:%d S:%d", selectedPattern, selectedStep);
-        display.drawStr(0, 12, buf);
-        
-        // Draw step grid (4x4 = 16 steps)
-        Pattern* pattern = sequencer->getPattern(selectedPattern);
-        if (pattern) {
-            int cellW = 8;
-            int cellH = 8;
-            int startX = 0;
-            int startY = 20;
-            
-            for (int s = 0; s < 16; s++) {
-                int x = startX + (s % 4) * cellW;
-                int y = startY + (s / 4) * cellH;
-                
-                if (pattern->steps[s].active) {
-                    display.drawBox(x, y, cellW - 1, cellH - 1);
-                } else {
-                    display.drawFrame(x, y, cellW - 1, cellH - 1);
-                }
-                
-                // Highlight current step
-                if (s == sequencer->getCurrentStep()) {
-                    display.drawFrame(x - 1, y - 1, cellW + 1, cellH + 1);
-                }
-            }
-        }
-    }
-}
-
-void UI::drawSettingsScreen() {
-    display.setFont(u8g2_font_6x10_tf);
-    display.drawStr(0, 0, "SETTINGS");
-    
-    if (!sequencer || !effects) return;
-    
-    char buf[64];
-    
-    // BPM
-    snprintf(buf, sizeof(buf), "BPM: %d", sequencer->getBPM());
-    display.drawStr(0, 12, buf);
-    
-    // Bit Crusher
-    snprintf(buf, sizeof(buf), "Bits: %d %s", 
-             effects->getBitCrusherBits(),
-             effects->isBitCrusherEnabled() ? "ON" : "OFF");
-    display.drawStr(0, 24, buf);
-    
-    // Filter
-    snprintf(buf, sizeof(buf), "Filt: %.0fHz %s",
-             effects->getFilterCutoff(),
-             effects->isFilterEnabled() ? "ON" : "OFF");
-    display.drawStr(0, 36, buf);
-    
-    // Highlight selected setting
-    int yPos = 12 + (settingIndex * 12);
-    display.drawHLine(0, yPos + 10, 64);
-}
-
-void UI::drawWaveform(int x, int y, int w, int h, Sample* sample) {
-    if (!sample || !sample->loaded) return;
-    
-    // Simple waveform display
-    int samplesToShow = min((int)sample->length, w);
-    float step = (float)sample->length / (float)samplesToShow;
-    
-    for (int i = 0; i < samplesToShow - 1; i++) {
-        int idx1 = (int)(i * step);
-        int idx2 = (int)((i + 1) * step);
-        
-        if (idx1 < sample->length && idx2 < sample->length) {
-            int y1 = y + h/2 + (sample->data[idx1] * h / 65536);
-            int y2 = y + h/2 + (sample->data[idx2] * h / 65536);
-            display.drawLine(x + i, y1, x + i + 1, y2);
-        }
+void SynthUI::drawPlayIndicator(bool playing) {
+    // Issue #19: Graphic
+    if (playing) {
+        // Triangle
+        u8g2.drawTriangle(110, 22, 110, 30, 118, 26);
+    } else {
+        // Pause bars
+        u8g2.drawBox(110, 22, 3, 8);
+        u8g2.drawBox(115, 22, 3, 8);
     }
 }
