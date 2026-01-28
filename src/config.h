@@ -67,6 +67,8 @@ enum SettingsMenuItem {
   MENU_BPM,
   MENU_PLAY_PAUSE,
   MENU_CLEAR_TRACK,
+  MENU_VOLUME,
+  MENU_BRIGHTNESS,
   MENU_ITEM_COUNT
 };
 
@@ -74,7 +76,9 @@ static const char* menuItemNames[] = {
   "Instrument",
   "BPM",
   "Play/Pause",
-  "Clear Track"
+  "Clear Track",
+  "Volume",
+  "Brightness"
 };
 
 #endif

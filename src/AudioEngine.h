@@ -10,6 +10,7 @@ struct Voice {
     int note; // Track MIDI note for re-triggering logic
     float amplitude;
     bool active;
+    bool releasing;
     Instrument instrument;
     uint32_t sampleCount;
     float envelope;
@@ -28,6 +29,11 @@ public:
     void killAll();
     int getActiveVoiceCount();
     
+    // Volume & Visualizer
+    void setVolume(int vol); // 0-100
+    int getVolume();
+    float getVisualizerLevel(); // 0.0 - 1.0 (Approx amplitude)
+    
 private:
     Voice voices[POLYPHONY];
     float midiToFreq(int note);
@@ -37,8 +43,19 @@ private:
     float generateWaveform(Voice& voice);
     double poly_blep(double t, double dt);
     
-    // DC Blocker state (Issue #4)
-    float dcAccumulator = 0.0f;
+    // DC Blocker state
+    float prevX_L = 0.0f;
+    float prevY_L = 0.0f;
+    float prevX_R = 0.0f;
+    float prevY_R = 0.0f;
+    
+    float masterVolume = 0.8f;
+    
+    // Waveform Buffer for UI
+    float visualizerBuffer[128];
+    
+public: 
+    const float* getWaveform() { return visualizerBuffer; }
 };
 
 #endif

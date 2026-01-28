@@ -12,9 +12,11 @@
 #define FONT_BODY   u8g2_font_6x10_tf
 #define FONT_SMALL  u8g2_font_5x7_tf
 
+#include "Hardware.h" // Add header
+
 class SynthUI {
 public:
-    SynthUI(Sequencer& seq, AudioEngine& audio);
+    SynthUI(Sequencer& seq, AudioEngine& audio, Hardware& hw); // Add hardware
     void init();
     void draw(Mode currentMode);
     
@@ -25,6 +27,7 @@ public:
 private:
     Sequencer& sequencer;
     AudioEngine& audioEngine;
+    Hardware& hardware; // Add reference
     U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2; // Owned by UI
     
     void drawHeader(const char* title);

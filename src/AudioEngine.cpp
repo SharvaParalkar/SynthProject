@@ -1,247 +1,230 @@
 #include "AudioEngine.h"
 #include <math.h>
 
+// Constants
+#ifndef PI
+#define PI 3.14159265358979323846
+#endif
+
 AudioEngine::AudioEngine() {
+    for (int i = 0; i < POLYPHONY; i++) {
+        voices[i].active = false;
+        voices[i].releasing = false;
+        voices[i].phase = 0.0f;
+    }
 }
 
 void AudioEngine::init() {
-    for (int i = 0; i < POLYPHONY; i++) {
-        voices[i].active = false;
-        voices[i].phase = 0;
-        voices[i].amplitude = 0;
-        voices[i].currentInc = 0;
-    }
+    // Nothing specific yet
 }
 
-double AudioEngine::poly_blep(double t, double dt) {
-    // 0 <= t < 1
-    if (t < dt) {
-        t /= dt;
-        return t + t - t * t - 1.0;
-    }
-    // -1 < t < 0
-    else if (t > 1.0 - dt) {
-        t = (t - 1.0) / dt;
-        return t * t + t + t + 1.0;
-    }
-    return 0.0;
+void AudioEngine::setVolume(int vol) {
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    masterVolume = vol / 100.0f;
 }
 
-float AudioEngine::midiToFreq(int note) {
-    return 440.0f * powf(2.0f, (note - 69) / 12.0f);
+int AudioEngine::getVolume() {
+    return (int)(masterVolume * 100);
 }
 
-int AudioEngine::findFreeVoice() {
-    // 1. Find inactive
+// Simple visualizer: Return sum of active voice amplitudes (scaled)
+float AudioEngine::getVisualizerLevel() {
+    float sum = 0.0f;
     for (int i = 0; i < POLYPHONY; i++) {
-        if (!voices[i].active) return i;
+        if (voices[i].active) {
+            sum += voices[i].envelope; // Envelope tracks ADSR
+        }
     }
+    // Cap at 1.0 roughly
+    if (sum > 1.0f) sum = 1.0f;
+    return sum;
+}
 
-    // 2. Find releasing (Issue #10: Anti-click will be handled by crossfade in noteOn/Off if generic, 
-    // but here we just pick the voice. Logic remains same as original for selection)
-    const uint32_t ATTACK_SAMPLES = 441;
-    const uint32_t SUSTAIN_SAMPLES = 13230;
-    
-    int oldest = 0;
-    uint32_t oldestCount = 0;
-    
-    for (int i = 0; i < POLYPHONY; i++) {
-       if (voices[i].sampleCount > ATTACK_SAMPLES + SUSTAIN_SAMPLES) return i;
-       if (voices[i].sampleCount > oldestCount) {
-           oldest = i;
-           oldestCount = voices[i].sampleCount;
-       }
+void AudioEngine::generate(int16_t* buffer, int samples) {
+    for (int i = 0; i < samples; i++) {
+        float sampleMix = 0.0f;
+        int activeVoices = 0;
+        
+        for (int v = 0; v < POLYPHONY; v++) {
+            if (voices[v].active) {
+                sampleMix += generateWaveform(voices[v]);
+                activeVoices++;
+            }
+        }
+        
+        // Simple Limiter / Mixer
+        if (activeVoices > 0) {
+            sampleMix /= (float)sqrt((float)activeVoices); // Soft scaling
+        }
+        
+        // Master Volume
+        sampleMix *= masterVolume;
+        
+        // DC Blocker (Simple High Pass)
+        // y[n] = x[n] - x[n-1] + R * y[n-1]
+        // Process Left/Right (Here mono source mixed to stereo)
+        float x = sampleMix;
+        float y_L = x - prevX_L + 0.995f * prevY_L;
+        prevX_L = x;
+        prevY_L = y_L;
+        
+        // Duplicate for Right for now (since source is mono)
+        float y_R = y_L; 
+        
+        // Clipping
+        if (y_L > 1.0f) y_L = 1.0f;
+        if (y_L < -1.0f) y_L = -1.0f;
+        
+        // Interleaved Stereo (Right/Left)
+        // Note: Some DACs expect Left/Right, some Right/Left.
+        // Code here writes i*2 and i*2+1.
+        buffer[i*2] = (int16_t)(y_R * 30000.0f);     
+        buffer[i*2+1] = (int16_t)(y_L * 30000.0f); 
+        
+        // Update Visualizer Buffer (Just keep the last 128 samples of the frame)
+        // This is a simple circular-ish fill or just overwrite if we are fast enough
+        // To keep it stable, we might want to just copy the end of the buffer?
+        // Let's just write to it with a static index to "scroll" it or just fill it.
+        // For a simple oscilloscope, we often want to fill it continuously.
+        static int visIdx = 0;
+        visualizerBuffer[visIdx] = y_L; // Use Mono/Left signal
+        visIdx = (visIdx + 1) % 128;
     }
-    return oldest;
 }
 
 void AudioEngine::noteOn(int note, Instrument inst) {
-    // Check if this note is already playing
+    // Check if note is already playing?
     for (int i = 0; i < POLYPHONY; i++) {
         if (voices[i].active && voices[i].note == note) {
-            // Re-trigger existing voice
-            voices[i].instrument = inst;
-            voices[i].sampleCount = 0;
-            voices[i].envelope = 0;
-            // Optional: Randomize phase to reduce identical-note flagging if retriggered fast?
-            // voices[i].phase = 0; 
+            // Re-trigger
+            voices[i].releasing = false;
+            voices[i].envelope = 1.0f;
+            voices[i].phase = 0.0f;
             return;
         }
     }
 
-    // Otherwise find a new voice
     int v = findFreeVoice();
-    
-    voices[v].active = true;
-    voices[v].note = note;
-    voices[v].frequency = midiToFreq(note);
-    voices[v].instrument = inst;
-    voices[v].sampleCount = 0;
-    voices[v].envelope = 0;
-    voices[v].phase = 0;
+    if (v != -1) {
+        voices[v].active = true;
+        voices[v].releasing = false;
+        voices[v].note = note;
+        voices[v].frequency = midiToFreq(note);
+        voices[v].phase = 0.0f;
+        voices[v].instrument = inst;
+        voices[v].sampleCount = 0;
+        voices[v].envelope = 1.0f; 
+        voices[v].currentInc = voices[v].frequency / SAMPLE_RATE;
+    }
+}
+
+void AudioEngine::noteOff(int note) {
+    for (int i = 0; i < POLYPHONY; i++) {
+        if (voices[i].active && voices[i].note == note) {
+            voices[i].releasing = true; // Trigger release phase
+        }
+    }
 }
 
 void AudioEngine::killAll() {
     for (int i = 0; i < POLYPHONY; i++) {
         voices[i].active = false;
+        voices[i].releasing = false;
     }
 }
 
 int AudioEngine::getActiveVoiceCount() {
-    int count = 0;
+    int c = 0;
     for (int i = 0; i < POLYPHONY; i++) {
-        if (voices[i].active) count++;
+        if (voices[i].active) c++;
     }
-    return count;
+    return c;
+}
+
+float AudioEngine::midiToFreq(int note) {
+    return 440.0f * pow(2.0f, (note - 69) / 12.0f);
+}
+
+int AudioEngine::findFreeVoice() {
+    // First try to find non-active
+    for (int i = 0; i < POLYPHONY; i++) {
+        if (!voices[i].active) return i;
+    }
+    
+    // If all active, find one that is releasing
+    for (int i = 0; i < POLYPHONY; i++) {
+        if (voices[i].releasing) return i;
+    }
+    
+    // Steal oldest (lowest envelope?)
+    return -1;
 }
 
 float AudioEngine::generateWaveform(Voice& voice) {
-    float sample = 0;
+    float out = 0.0f;
     float phase = voice.phase;
-    float inc = voice.frequency / SAMPLE_RATE;
+    float inc = voice.currentInc;
     
-    // PolyBLEP requiring dt = inc
     switch (voice.instrument) {
         case INST_SINE:
-            sample = sinf(phase * 2 * PI);
+            out = sinf(2.0f * PI * phase);
             break;
-            
         case INST_SQUARE:
-            // Naive: sample = phase < 0.5 ? 1.0 : -1.0;
-            // PolyBLEP:
-            sample = (phase < 0.5f) ? 1.0f : -1.0f;
-            sample += poly_blep(phase, inc);
-            sample -= poly_blep(fmod(phase + 0.5f, 1.0f), inc);
+            out = (phase < 0.5f) ? 1.0f : -1.0f;
+            out += poly_blep(phase, inc);
+            out -= poly_blep(fmod(phase + 0.5f, 1.0f), inc);
             break;
-            
         case INST_SAW:
-            // Naive: sample = 2.0 * phase - 1.0;
-            sample = (2.0f * phase) - 1.0f;
-            sample -= poly_blep(phase, inc);
+            out = (2.0f * phase) - 1.0f;
+            out -= poly_blep(phase, inc);
             break;
-            
         case INST_TRIANGLE:
-            // Naive: sample = phase < 0.5 ? (4.0 * phase - 1.0) : (3.0 - 4.0 * phase);
-            // It's harder to aliasing-reduce triangle without integration. 
-            // Simple approach: Use naive but maybe smooth it? 
-            // Let's stick to naive for Triangle or maybe sin approximation?
-            // "Triangle" in synth terms:
-            sample = (phase < 0.5f) ? (4.0f * phase - 1.0f) : (3.0f - 4.0f * phase);
+            out = (phase < 0.5f) ? (4.0f * phase - 1.0f) : (3.0f - 4.0f * phase);
             break;
-            
-        case INST_PLUCK:
-             // Damped sine
-            sample = sinf(phase * 2 * PI) * expf(-voice.envelope * 3.0f);
-            break;
-            
-        case INST_BASS:
-             // Two sines
-            sample = sinf(phase * 2 * PI) * 0.7f + sinf(phase * 4 * PI) * 0.3f;
-            break;
-
-        case INST_PAD:
-            sample = sinf(phase * 2 * PI) * 0.5f + 
-                     sinf(phase * 4.01f * PI) * 0.3f +
-                     sinf(phase * 8.02f * PI) * 0.2f;
-            break;
-
-        case INST_LEAD:
-            // Mixed Pulse/Sine
-            {
-                float pulse = (phase < 0.5f ? 1.0f : -1.0f);
-                pulse += poly_blep(phase, inc);
-                pulse -= poly_blep(fmod(phase + 0.5f, 1.0f), inc);
-                sample = pulse * 0.6f + sinf(phase * 2 * PI) * 0.4f;
+        default: 
+            out = sinf(2.0f * PI * phase); 
+            if (voice.instrument == INST_BASS) {
+                 out = (phase < 0.5f) ? 1.0f : -1.0f; 
             }
             break;
-         default:
-            sample = 0;
-            break;
     }
     
-    // Advance phase
+    // Envelope Logic
+    if (voice.releasing) {
+        // Fast Release
+        voice.envelope *= 0.9f;
+        if (voice.envelope < 0.001f) {
+            voice.active = false;
+            return 0.0f;
+        }
+    } else {
+        // Attack/Sustain/Decay
+        if (voice.instrument == INST_PLUCK) {
+            voice.envelope *= 0.9999f;
+            if (voice.envelope < 0.001f) voice.active = false;
+        }
+        // Others sustain at 1.0f
+    }
+    
+    out *= voice.envelope;
+    
+    voice.sampleCount++;
+    
     voice.phase += inc;
-    if (voice.phase >= 1.0f) {
-        voice.phase -= 1.0f;
-    }
+    if (voice.phase >= 1.0f) voice.phase -= 1.0f;
     
-    return sample;
+    return out;
 }
 
-void AudioEngine::generate(int16_t* buffer, int samples) {
-    const uint32_t ATTACK_SAMPLES = 441;   // 10ms
-    const uint32_t SUSTAIN_SAMPLES = 8000;  // Reduced from 13230 (~180ms)
-    const uint32_t RELEASE_SAMPLES = 2000;  // Drastically reduced from 8820 (~45ms) to prevent muddy overlaps
-    
-    int activeVoices = getActiveVoiceCount();
-    // Issue #3: Dynamic Gain Compensation
-    // If 1 voice, amp=1.0. If 4 voices, amp=0.5. 
-    // User suggested: 1/sqrt(N).
-    float dynamicGain = 1.0f;
-    if (activeVoices > 0) {
-        dynamicGain = 1.0f / sqrt((float)activeVoices);
+// PolyBLEP for antialiasing
+double AudioEngine::poly_blep(double t, double dt) {
+    if (t < dt) {
+        t /= dt;
+        return t+t - t*t - 1.0;
+    } else if (t > 1.0 - dt) {
+        t = (t - 1.0) / dt;
+        return t*t + t+t + 1.0;
     }
-    
-    for (int i = 0; i < samples; i++) {
-        float mixL = 0;
-        float mixR = 0;
-        
-        for (int v = 0; v < POLYPHONY; v++) {
-            if (voices[v].active) {
-                float sample = generateWaveform(voices[v]);
-                
-                // Instrument specific gain (Sines are quiet, others need attenuation)
-                float instGain = (voices[v].instrument == INST_SINE) ? 1.0f : 0.6f;
-
-                // Envelope
-                // Issue #38 suggests Lookup Table. For now, we stick to calc but optimize if needed.
-                // Keeping original logic for now as it's readable.
-                float env = 0.0f;
-                uint32_t s = voices[v].sampleCount;
-                
-                if (s < ATTACK_SAMPLES) {
-                    env = (float)s / ATTACK_SAMPLES;
-                } else if (s < ATTACK_SAMPLES + SUSTAIN_SAMPLES) {
-                    env = 1.0f;
-                } else if (s < ATTACK_SAMPLES + SUSTAIN_SAMPLES + RELEASE_SAMPLES) {
-                    uint32_t r = s - ATTACK_SAMPLES - SUSTAIN_SAMPLES;
-                    env = 1.0f - ((float)r / RELEASE_SAMPLES);
-                } else {
-                    voices[v].active = false;
-                    env = 0.0f;
-                }
-                
-                voices[v].envelope = env;
-                voices[v].sampleCount++;
-                
-                sample *= env * dynamicGain * instGain;
-                
-                mixL += sample;
-                mixR += sample;
-            }
-        }
-        
-        // Issue #4: DC Blocker
-        // output = output - (dcAccumulator += (output - dcAccumulator) * 0.002)
-        // High-pass filter at ~20Hz
-        // Applying to Mix
-        dcAccumulator += (mixL - dcAccumulator) * 0.005f; // approx 20-30Hz at 44k
-        mixL -= dcAccumulator;
-        mixR -= dcAccumulator; // Assuming Mono for now, or use separate DC states
-        
-        // Issue #2: Soft Clipping
-        // Reduce pre-gain from 1.5 to 1.0 or 0.8
-        mixL = tanhf(mixL * 1.0f) * 0.8f; 
-        mixR = tanhf(mixR * 1.0f) * 0.8f;
-        
-        // Issue #9: Rounding
-        // int16 range: 32767. 
-        // 0.8 * 32767 = 26213.
-        // Original code used 8000? That's very low. 
-        // If tanh limits to 0.8, max is 0.8.
-        // 0.8 * 28000 = 22400. Safe.
-        // Using lrintf for rounding.
-        buffer[i*2] = (int16_t)lrintf(mixL * 28000.0f);
-        buffer[i*2+1] = (int16_t)lrintf(mixR * 28000.0f);
-    }
+    return 0.0;
 }

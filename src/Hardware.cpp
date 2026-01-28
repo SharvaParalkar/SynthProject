@@ -7,6 +7,7 @@ Hardware::Hardware() {
     lastBtnModeState = false;
     btnOctaveState = false;
     lastBtnOctaveState = false;
+    ledBrightness = 127;
 }
 
 void Hardware::init() {
@@ -48,8 +49,12 @@ void Hardware::init() {
         digitalWrite(ROW_PINS[i], HIGH);
         
         pinMode(COL_PINS[i], INPUT_PULLUP);
-        pinMode(LED_PINS[i], OUTPUT);
-        digitalWrite(LED_PINS[i], LOW);
+        
+        // PWM Setup for LEDs
+        // Channels 0-3, 5000Hz, 8-bit
+        ledcSetup(i, 5000, 8);
+        ledcAttachPin(LED_PINS[i], i);
+        ledcWrite(i, 0); // Start Off
     }
     
     pinMode(BTN_MODE, INPUT_PULLUP);
@@ -98,6 +103,10 @@ bool Hardware::isPadJustPressed(int row, int col) {
     return padState[row][col] && !lastPadState[row][col];
 }
 
+bool Hardware::isPadJustReleased(int row, int col) {
+    return !padState[row][col] && lastPadState[row][col];
+}
+
 bool Hardware::isModeJustPressed() {
     return btnModeState && !lastBtnModeState;
 }
@@ -108,11 +117,25 @@ bool Hardware::isOctaveJustPressed() {
 
 void Hardware::setGroupLEDs(int activeIndex) {
     for (int i = 0; i < 4; i++) {
-        digitalWrite(LED_PINS[i], (i == activeIndex) ? HIGH : LOW);
+        if (i == activeIndex) {
+            ledcWrite(i, ledBrightness);
+        } else {
+            ledcWrite(i, 0);
+        }
     }
 }
 
 void Hardware::setStepLEDs(int step) {
     int page = step / 4;
     setGroupLEDs(page);
+}
+
+void Hardware::setBrightness(int b) {
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    ledBrightness = b;
+}
+
+int Hardware::getBrightness() {
+    return ledBrightness;
 }

@@ -9,7 +9,7 @@
 Hardware hardware;
 AudioEngine audioEngine;
 Sequencer sequencer(audioEngine);
-SynthUI ui(sequencer, audioEngine);
+SynthUI ui(sequencer, audioEngine, hardware);
 
 // Application State
 Mode currentMode = MODE_LAUNCHPAD;
@@ -45,15 +45,13 @@ void handleInput() {
     // Matrix Handling
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
+            // Check for Press
             if (hardware.isPadJustPressed(r, c)) {
                 int padIndex = r * 4 + c;
                 
                 if (currentMode == MODE_LAUNCHPAD) {
                     // Play Note
                     int note = 36 + padIndex + (sequencer.getCurrentOctave() * 12);
-                    // Use track instrument or default?
-                    // Old code used 'currentInstrument'. 
-                    // Let's use the instrument of the CURRENT TRACK.
                     Instrument inst = sequencer.getInstrument(sequencer.getCurrentTrack());
                     audioEngine.noteOn(note, inst);
                     
@@ -63,51 +61,74 @@ void handleInput() {
                     
                 } else if (currentMode == MODE_SETTINGS) {
                     // Menu Navigation
-                    // 0: Up, 1: Down, 3: Select (User Requested)
+                    // 0: Up, 1: Down, 2: Select
                     if (padIndex == 0) {
                         ui.menuCursor--;
                         if (ui.menuCursor < 0) {
                             ui.menuCursor = MENU_ITEM_COUNT - 1;
-                            ui.menuScroll = max(0, ui.menuCursor - 2);
+                            ui.menuScroll = max(0, ui.menuCursor - 3);
                         } else if (ui.menuCursor < ui.menuScroll) {
                             ui.menuScroll = ui.menuCursor;
                         }
-                    } else if (padIndex == 1) { // Changed from 2 to 1 (User Request)
+                    } else if (padIndex == 1) { 
                         ui.menuCursor++;
                         if (ui.menuCursor >= MENU_ITEM_COUNT) {
                             ui.menuCursor = 0;
                             ui.menuScroll = 0;
-                        } else if (ui.menuCursor >= ui.menuScroll + 3) {
-                            ui.menuScroll = ui.menuCursor - 2;
+                        } else if (ui.menuCursor >= ui.menuScroll + 4) {
+                            ui.menuScroll = ui.menuCursor - 3;
                         }
-                    } else if (padIndex == 2) { // Changed to 2 (User Request)
-                        // Select
+                    } else if (padIndex == 2) { 
+                        // Select / Action
                         int item = ui.menuCursor;
-                         if (item == MENU_INSTRUMENT) {
+                        if (item == MENU_INSTRUMENT) {
                             int trk = sequencer.getCurrentTrack();
                             Instrument inst = sequencer.getInstrument(trk);
                             inst = (Instrument)((inst + 1) % INST_COUNT);
                             sequencer.setInstrument(trk, inst);
-                         } else if (item == MENU_BPM) {
+                        } else if (item == MENU_BPM) {
                              int b = sequencer.getBPM();
-                             b += 20;
-                             if (b > 180) b = 60;
+                             b += 20; if (b > 180) b = 60;
                              sequencer.setBPM(b);
-                         } else if (item == MENU_PLAY_PAUSE) {
+                        } else if (item == MENU_PLAY_PAUSE) {
                              sequencer.togglePlay();
-                         } else if (item == MENU_CLEAR_TRACK) {
+                        } else if (item == MENU_CLEAR_TRACK) {
                              sequencer.clearTrack(sequencer.getCurrentTrack());
-                             // Fix: Reset cursor to top (User Request)
                              ui.menuCursor = 0;
                              ui.menuScroll = 0;
-                         }
+                        } else if (item == MENU_VOLUME) {
+                             // Cycle + 20
+                             int v = audioEngine.getVolume() + 20;
+                             if (v > 100) v = 0;
+                             audioEngine.setVolume(v);
+                        } else if (item == MENU_BRIGHTNESS) {
+                             // Cycle + 50ish (20%)
+                             int b = hardware.getBrightness();
+                             b += 51; // 20% of 255
+                             if (b > 255) b = 0;
+                             hardware.setBrightness(b);
+                        }
                     } 
-                    // Moved Fine tune from 2 to 3
-                     else if (padIndex == 3 && ui.menuCursor == MENU_BPM) {
-                         sequencer.setBPM(max(60, sequencer.getBPM() - 5));
-                     } else if (padIndex == 4 && ui.menuCursor == MENU_BPM) {
-                         sequencer.setBPM(min(180, sequencer.getBPM() + 5));
-                     }
+                    
+                    // Fine Adjustments (Pad 3: -, Pad 4: +)
+                    if (padIndex == 3) { // Decrease
+                        if (ui.menuCursor == MENU_BPM) sequencer.setBPM(max(60, sequencer.getBPM() - 5));
+                        else if (ui.menuCursor == MENU_VOLUME) audioEngine.setVolume(audioEngine.getVolume() - 5);
+                        else if (ui.menuCursor == MENU_BRIGHTNESS) hardware.setBrightness(hardware.getBrightness() - 13); // ~5%
+                    } else if (padIndex == 4) { // Increase
+                        if (ui.menuCursor == MENU_BPM) sequencer.setBPM(min(180, sequencer.getBPM() + 5));
+                        else if (ui.menuCursor == MENU_VOLUME) audioEngine.setVolume(audioEngine.getVolume() + 5);
+                        else if (ui.menuCursor == MENU_BRIGHTNESS) hardware.setBrightness(hardware.getBrightness() + 13);
+                    }
+                }
+            } // End Press Check
+
+            // Check for Release
+            if (hardware.isPadJustReleased(r, c)) {
+                if (currentMode == MODE_LAUNCHPAD) {
+                    int padIndex = r * 4 + c;
+                    int note = 36 + padIndex + (sequencer.getCurrentOctave() * 12);
+                    audioEngine.noteOff(note); // Stop note
                 }
             }
         }

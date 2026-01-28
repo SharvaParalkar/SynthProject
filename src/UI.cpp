@@ -1,8 +1,8 @@
 #include "UI.h"
 #include <Wire.h>
 
-SynthUI::SynthUI(Sequencer& seq, AudioEngine& audio) 
-    : sequencer(seq), audioEngine(audio), u8g2(U8G2_R0, U8X8_PIN_NONE) {
+SynthUI::SynthUI(Sequencer& seq, AudioEngine& audio, Hardware& hw) 
+    : sequencer(seq), audioEngine(audio), hardware(hw), u8g2(U8G2_R0, U8X8_PIN_NONE) {
 }
 
 void SynthUI::init() {
@@ -34,24 +34,87 @@ void SynthUI::draw(Mode currentMode) {
 
 void SynthUI::drawLaunchpadMode() {
     u8g2.setFont(FONT_BODY);
-    u8g2.drawStr(0, 10, "Launchpad"); // Issue #22: Title Case
+    u8g2.drawStr(0, 10, "Launchpad");
     
     // Status Bar
     u8g2.drawLine(0, 12, 128, 12);
     
-    u8g2.drawStr(0, 24, instrumentNames[sequencer.getInstrument(sequencer.getCurrentTrack())]); // Actually assumes track 0 or global inst? 
-    // In Launchpad mode, main.cpp used 'currentInstrument'.
-    // We should probably expose 'currentInstrument' or use Track 0's.
-    // For now, let's assume we display the instrument of the selected track or just "Live".
+    // Info Line (Instrument and Octave)
+    u8g2.setFont(FONT_SMALL);
+    char buf[32];
     
+    // Instrument Name
+    int currentTrack = sequencer.getCurrentTrack();
+    Instrument inst = sequencer.getInstrument(currentTrack);
+    u8g2.drawStr(0, 22, instrumentNames[inst]);
+
     // Octave (Right Aligned)
-    char buf[16];
     sprintf(buf, "Oct:%d", sequencer.getCurrentOctave());
     int w = u8g2.getStrWidth(buf);
-    u8g2.drawStr(128 - w - 2, 24, buf); // Issue #11
+    u8g2.drawStr(128 - w - 2, 22, buf);
     
-    // Vizualizer?
-    // Maybe show active notes?
+    // --- Grid (Right Aligned, Larger) ---
+    // 4x4 Grid
+    int boxSize = 9;
+    int gap = 1;
+    // Total width = 4*9 + 3*1 = 36 + 3 = 39
+    int gridWidth = (4 * boxSize) + (3 * gap);
+    int gridStartX = 128 - gridWidth - 2; // Right align with 2px margin
+    int gridStartY = 24;
+    
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 4; col++) {
+            int x = gridStartX + col * (boxSize + gap);
+            int y = gridStartY + row * (boxSize + gap);
+            
+            // Check if pad is pressed
+            if (hardware.isPadPressed(row, col)) {
+                u8g2.drawBox(x, y, boxSize, boxSize);
+            } else {
+                u8g2.drawFrame(x, y, boxSize, boxSize);
+            }
+        }
+    }
+    
+    // --- Note Visualizer (Waveform on Left) ---
+    // Area: x=0 to gridStartX-4, y=24 to 64
+    int visX = 0;
+    int visY = 24;
+    int visW = gridStartX - 4;
+    int visH = 40; // 64 - 24
+    int midY = visY + (visH / 2);
+    
+    // Draw Frame
+    u8g2.drawFrame(visX, visY, visW, visH);
+    
+    // Draw Waveform
+    const float* wave = audioEngine.getWaveform();
+    // We have 128 samples in buffer, we have visW pixels.
+    // Let's just draw one pixel per X for the width we have.
+    // If visW < 128, we skip samples.
+    // To make it look stable, we might want to trigger, but for now just raw buffer.
+    
+    int prevY = midY;
+    
+    for (int i = 0; i < visW; i++) {
+        // Map i to buffer index (0..127)
+        int bufIdx = (i * 128) / visW;
+        if (bufIdx >= 128) bufIdx = 127;
+        
+        float sample = wave[bufIdx];
+        
+        // Scale sample (-1.0 to 1.0) to height (+- visH/2)
+        int drawY = midY - (int)(sample * (visH / 2));
+        
+        // Clamp
+        if (drawY < visY + 1) drawY = visY + 1;
+        if (drawY > visY + visH - 2) drawY = visY + visH - 2;
+        
+        if (i > 0) {
+            u8g2.drawLine(visX + i - 1, prevY, visX + i, drawY);
+        }
+        prevY = drawY;
+    }
 }
 
 void SynthUI::drawSequencerMode() {
@@ -77,7 +140,6 @@ void SynthUI::drawSequencerMode() {
     drawPlayIndicator(sequencer.isPlayingState());
     
     // Grid (Issue #12: Y-positioning)
-    // Issue #18: Aspect Ratio (Square boxes)
     int gridY = 32;
     for (int i = 0; i < 16; i++) {
         int x = i * 8;
@@ -90,10 +152,8 @@ void SynthUI::drawSequencerMode() {
         
         // Highlight Current Step (Issue #13: Highlight)
         if (i == sequencer.getCurrentStep() && sequencer.isPlayingState()) {
-             // Draw underline or frame outside
+             // Draw underline
              u8g2.drawHLine(x, gridY + 8, 6);
-             // Or frame
-             // u8g2.drawFrame(x-1, gridY-1, 8, 8);
         }
     }
     
@@ -126,11 +186,14 @@ void SynthUI::drawSettingsMode() {
         u8g2.drawStr(116, 24, "^");
     }
     
-    for (int i = 0; i < 3; i++) {
+    // Display 4 items max to fit screen
+    for (int i = 0; i < 4; i++) {
         int itemIndex = menuScroll + i;
         if (itemIndex >= MENU_ITEM_COUNT) break;
         
-        int y = 24 + (i * 12);
+        int y = 24 + (i * 10); // Slightly customized spacing to fit more? Or keep standard
+        // Original was 12 spacing. 24, 36, 48, 60. Fits 4 lines.
+        y = 24 + (i * 12);
         
         if (itemIndex == menuCursor) {
             u8g2.drawStr(0, y, ">");
@@ -138,14 +201,9 @@ void SynthUI::drawSettingsMode() {
         
         u8g2.drawStr(10, y, menuItemNames[itemIndex]);
         
-        // Value (Right Aligned - Issue #16)
+        // Value (Right Aligned)
         char val[32];
         if (itemIndex == MENU_INSTRUMENT) {
-            // Need global current instrument? 
-            // In main logic, Settings changes 'currentInstrument' or Track Instrument.
-            // Let's assume we display current generic instrument name
-            // But 'currentInstrument' state is logically in Main or Sequencer.
-            // For now, placeholder. Main will need to pass this or we use Sequencer's current track inst.
             sprintf(val, "%s", instrumentNames[sequencer.getInstrument(sequencer.getCurrentTrack())]);
         } else if (itemIndex == MENU_BPM) {
             sprintf(val, "%d", sequencer.getBPM());
@@ -153,19 +211,24 @@ void SynthUI::drawSettingsMode() {
             sprintf(val, "%s", sequencer.isPlayingState() ? "Play" : "Stop");
         } else if (itemIndex == MENU_CLEAR_TRACK) {
             sprintf(val, "Trk%d", sequencer.getCurrentTrack()+1);
+        } else if (itemIndex == MENU_VOLUME) {
+            sprintf(val, "%d%%", audioEngine.getVolume());
+        } else if (itemIndex == MENU_BRIGHTNESS) {
+            int b = hardware.getBrightness();
+            int pct = (int)((b / 255.0f) * 100.0f);
+            sprintf(val, "%d%%", pct);
         }
         
         int w = u8g2.getStrWidth(val);
-        u8g2.drawStr(128 - w - 12, y, val); // -12 for scroll bar space
+        u8g2.drawStr(128 - w - 12, y, val);
     }
     
-    if (menuScroll + 3 < MENU_ITEM_COUNT) {
+    if (menuScroll + 4 < MENU_ITEM_COUNT) {
         u8g2.drawStr(116, 60, "v");
     }
 }
 
 void SynthUI::drawPlayIndicator(bool playing) {
-    // Issue #19: Graphic
     if (playing) {
         // Triangle
         u8g2.drawTriangle(110, 22, 110, 30, 118, 26);
