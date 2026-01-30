@@ -30,7 +30,7 @@ class AudioEngine {
 public:
     AudioEngine();
     void init();
-    void generate(int16_t* buffer, int samples);
+    void generate(int32_t* buffer, int samples);
     void noteOn(int note, Instrument inst);
     void noteOff(int note);
     void killAll();
@@ -60,6 +60,9 @@ private:
     
     // Low-pass filter state
     float lpf_state = 0.0f;
+    
+    // Reset filter/DC blocker state (called on killAll)
+    void resetFilterState();
     
     float masterVolume = 0.8f;
     float filterCutoff = 0.5f;

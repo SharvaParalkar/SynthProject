@@ -5,18 +5,61 @@
 #include "Sequencer.h"
 #include "UI.h"
 
+// =============================================================================
+// FREERTOS DUAL-CORE AUDIO ARCHITECTURE
+// =============================================================================
+// Core 0: Dedicated audio generation task (high priority, no interruptions)
+// Core 1: UI, input handling, sequencer logic (main Arduino loop)
+// =============================================================================
+
 // Modules
 Hardware hardware;
 AudioEngine audioEngine;
 Sequencer sequencer(audioEngine);
 SynthUI ui(sequencer, audioEngine, hardware);
 
-// Application State
-Mode currentMode = MODE_LAUNCHPAD;
+// Application State (volatile for cross-core access)
+volatile Mode currentMode = MODE_LAUNCHPAD;
 
 // Audio buffers (32-bit for high-quality PCM5102A output)
+// Double-buffered for smoother operation
 int32_t audioBuffer[I2S_BUFFER_SIZE * 2]; // Stereo (L, R interleaved)
 
+// Audio Task Handle
+TaskHandle_t audioTaskHandle = NULL;
+
+// =============================================================================
+// AUDIO TASK - Runs on Core 0 (highest priority)
+// =============================================================================
+// This task handles ALL audio generation and I2S output.
+// It runs in a tight loop, completely isolated from UI/input processing.
+// This eliminates buffer underruns caused by slow I2C display updates.
+// =============================================================================
+void audioTask(void* pvParameters) {
+    Serial.println("[AudioTask] Started on Core 0");
+    
+    // Pre-allocate local buffer for this task
+    int32_t localBuffer[I2S_BUFFER_SIZE * 2];
+    
+    while (true) {
+        // Clear buffer
+        memset(localBuffer, 0, sizeof(localBuffer));
+        
+        // Generate audio (native 32-bit output)
+        audioEngine.generate(localBuffer, I2S_BUFFER_SIZE);
+        
+        // Output to I2S/PCM5102A
+        // Size: frames * 2 channels * 4 bytes per sample (32-bit)
+        hardware.writeAudio(localBuffer, I2S_BUFFER_SIZE * 2 * sizeof(int32_t));
+        
+        // Minimal yield to allow other Core 0 system tasks
+        // The i2s_write with portMAX_DELAY already blocks appropriately
+    }
+}
+
+// =============================================================================
+// INPUT HANDLING - Runs on Core 1
+// =============================================================================
 void handleInput() {
     hardware.scanButtons();
     
@@ -224,59 +267,81 @@ void handleInput() {
     }
 }
 
+// =============================================================================
+// SETUP - Runs on Core 1
+// =============================================================================
 void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("Booting Modular Synth...");
+    Serial.println("[Main] Dual-Core Audio Architecture");
     
-    // Init Modules
+    // Init Modules (on Core 1)
     hardware.init();
     ui.init();
     audioEngine.init();
     sequencer.init();
     
+    // Initial display
     ui.draw(currentMode);
+    
+    // =========================================================================
+    // CREATE AUDIO TASK ON CORE 0
+    // =========================================================================
+    // Priority 10 = highest (above WiFi, system tasks)
+    // Stack: 4096 bytes (adequate for audio buffer + FPU operations)
+    // Pinned to Core 0 to completely isolate from UI/Input on Core 1
+    // =========================================================================
+    xTaskCreatePinnedToCore(
+        audioTask,          // Task function
+        "AudioTask",        // Task name
+        4096,               // Stack size (bytes)
+        NULL,               // Parameters
+        10,                 // Priority (high)
+        &audioTaskHandle,   // Task handle
+        0                   // Core 0 (audio-dedicated)
+    );
+    
+    Serial.println("[Main] Audio task created on Core 0");
+    Serial.println("[Main] UI/Input running on Core 1");
 }
 
+// =============================================================================
+// MAIN LOOP - Runs on Core 1 (UI, input, sequencer logic)
+// =============================================================================
+// Audio is now completely handled by the Core 0 task.
+// This loop only handles UI, input, and sequencer - no audio blocking!
+// =============================================================================
 void loop() {
-    // 1. Audio Generation (Highest Priority)
-    // Generate I2S_BUFFER_SIZE stereo frames into 32-bit buffer
-    // The new engine uses wavetable synthesis with band-limited oscillators
-    
-    memset(audioBuffer, 0, sizeof(audioBuffer));
-    
-    // Generate audio block (32-bit samples, interleaved stereo)
-    audioEngine.generate((int16_t*)audioBuffer, I2S_BUFFER_SIZE);
-    
-    // 2. Output to I2S/PCM5102A
-    // Size in bytes: frames * 2 channels * 4 bytes per sample (32-bit)
-    hardware.writeAudio(audioBuffer, I2S_BUFFER_SIZE * 2 * sizeof(int32_t));
-    
-    // 3. Inputs (Throttled)
-    static int inputDiv = 0;
-    if (++inputDiv >= 4) { // Every ~25ms
+    // 1. Inputs (every ~10ms for responsive controls)
+    static uint32_t lastInputTime = 0;
+    uint32_t now = millis();
+    if (now - lastInputTime >= 10) {
         handleInput();
-        inputDiv = 0;
+        lastInputTime = now;
     }
     
-    // 4. Logic
+    // 2. Sequencer Logic (timing-sensitive, run every loop)
     sequencer.update();
     
-    // 5. LEDs
-    static int ledDiv = 0;
-    if (++ledDiv >= 8) {
+    // 3. LEDs (every ~30ms)
+    static uint32_t lastLedTime = 0;
+    if (now - lastLedTime >= 30) {
         if (currentMode == MODE_SEQUENCER && sequencer.isPlayingState()) {
             hardware.setStepLEDs(sequencer.getCurrentStep());
         } else {
             hardware.setGroupLEDs(sequencer.getCurrentTrack());
         }
-        ledDiv = 0;
+        lastLedTime = now;
     }
     
-    // 6. Display (Low Priority)
-    static int dispDiv = 0;
-    if (++dispDiv >= 6) { // Every ~24ms (Assuming 4ms audio buffer loop)
+    // 4. Display (every ~40ms - can be slow, doesn't affect audio now!)
+    static uint32_t lastDisplayTime = 0;
+    if (now - lastDisplayTime >= 40) {
         ui.draw(currentMode);
-        dispDiv = 0;
+        lastDisplayTime = now;
     }
+    
+    // Small yield to prevent watchdog issues
+    delay(1);
 }

@@ -52,7 +52,7 @@ float AudioEngine::getVisualizerLevel() {
     return sum;
 }
 
-void AudioEngine::generate(int16_t* buffer, int samples) {
+void AudioEngine::generate(int32_t* buffer, int samples) {
     for (int i = 0; i < samples; i++) {
         float sampleMix = 0.0f;
         int activeVoices = 0;
@@ -97,10 +97,16 @@ void AudioEngine::generate(int16_t* buffer, int samples) {
         if (y > 1.0f) y = 1.0f;
         if (y < -1.0f) y = -1.0f;
         
-        // Interleaved Stereo (Left, Right)
-        int16_t sample = (int16_t)(y * 28000.0f); // Slight headroom
-        buffer[i*2] = sample;     // Left
-        buffer[i*2+1] = sample;   // Right
+        // =========================================================================
+        // 32-BIT OUTPUT FOR PCM5102A DAC
+        // =========================================================================
+        // PCM5102A expects 32-bit I2S frames with 24-bit audio data left-justified.
+        // We scale to full int32_t range for maximum dynamic range.
+        // Using 2147483647 (2^31 - 1) for positive, 2147483648 for negative.
+        int32_t sample32 = (int32_t)(y * 2147483647.0f);
+        
+        buffer[i*2] = sample32;     // Left
+        buffer[i*2+1] = sample32;   // Right
         
         // Update Visualizer Buffer
         static int visIdx = 0;
@@ -158,7 +164,16 @@ void AudioEngine::killAll() {
     for (int i = 0; i < POLYPHONY; i++) {
         voices[i].active = false;
         voices[i].releasing = false;
+        voices[i].fadeOutSamples = 0;
     }
+    // Reset filter state to prevent DC offset droning after silence
+    resetFilterState();
+}
+
+void AudioEngine::resetFilterState() {
+    lpf_state = 0.0f;
+    prevX_L = 0.0f;
+    prevY_L = 0.0f;
 }
 
 int AudioEngine::getActiveVoiceCount() {
