@@ -24,6 +24,10 @@ public:
     int menuCursor = 0;
     int menuScroll = 0;
     
+    // Note Editor Menu State
+    int noteMenuCursor = 0;
+    int noteMenuScroll = 0;
+    
 private:
     Sequencer& sequencer;
     AudioEngine& audioEngine;
@@ -34,6 +38,7 @@ private:
     void drawSequencerMode();
     void drawLaunchpadMode();
     void drawSettingsMode();
+    void drawNoteEditorMode();
     void drawPlayIndicator(bool playing); // Issue #19
 };
 

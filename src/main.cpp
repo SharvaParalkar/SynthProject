@@ -14,23 +14,30 @@ SynthUI ui(sequencer, audioEngine, hardware);
 // Application State
 Mode currentMode = MODE_LAUNCHPAD;
 
-// buffers
-int16_t audioBuffer[I2S_BUFFER_SIZE * 2]; // Stereo
+// Audio buffers (32-bit for high-quality PCM5102A output)
+int32_t audioBuffer[I2S_BUFFER_SIZE * 2]; // Stereo (L, R interleaved)
 
 void handleInput() {
     hardware.scanButtons();
     
-    // Mode Switching
-    if (hardware.isModeJustPressed()) {
-        currentMode = (Mode)((currentMode + 1) % 3);
+    // Cooldown timers for function keys
+    static uint32_t lastModePress = 0;
+    static uint32_t lastOctavePress = 0;
+    const uint32_t FUNCTION_KEY_COOLDOWN_MS = 200;  // 200ms cooldown for function keys
+    uint32_t now = millis();
+    
+    // Mode Switching with cooldown
+    if (hardware.isModeJustPressed() && (now - lastModePress >= FUNCTION_KEY_COOLDOWN_MS)) {
+        currentMode = (Mode)((currentMode + 1) % 4); // 4 modes now
         audioEngine.killAll();
         // Force Display Update
         ui.draw(currentMode); // Immediate feedback (Issue #21/23)
+        lastModePress = now;
         return;
     }
     
-    // Octave / Function
-    if (hardware.isOctaveJustPressed()) {
+    // Octave / Function with cooldown
+    if (hardware.isOctaveJustPressed() && (now - lastOctavePress >= FUNCTION_KEY_COOLDOWN_MS)) {
         if (currentMode == MODE_LAUNCHPAD) {
             int oct = sequencer.getCurrentOctave();
             oct = (oct + 1) % 7;
@@ -40,6 +47,7 @@ void handleInput() {
             int trk = sequencer.getCurrentTrack();
             sequencer.setCurrentTrack((trk + 1) % 4);
         }
+        lastOctavePress = now;
     }
     
     // Matrix Handling
@@ -60,9 +68,13 @@ void handleInput() {
                     sequencer.toggleStep(sequencer.getCurrentTrack(), padIndex);
                     
                 } else if (currentMode == MODE_SETTINGS) {
-                    // Menu Navigation
-                    // 0: Up, 1: Down, 2: Select
-                    if (padIndex == 0) {
+                    // Menu Navigation with Cooldown to prevent rapid-fire
+                    static uint32_t lastMenuAction = 0;
+                    const uint32_t MENU_COOLDOWN_MS = 150;  // 150ms between menu actions
+                    uint32_t now = millis();
+                    
+                    // 0: Up, 1: Down, 3: Select
+                    if (padIndex == 0 && (now - lastMenuAction >= MENU_COOLDOWN_MS)) {
                         ui.menuCursor--;
                         if (ui.menuCursor < 0) {
                             ui.menuCursor = MENU_ITEM_COUNT - 1;
@@ -70,7 +82,8 @@ void handleInput() {
                         } else if (ui.menuCursor < ui.menuScroll) {
                             ui.menuScroll = ui.menuCursor;
                         }
-                    } else if (padIndex == 1) { 
+                        lastMenuAction = now;
+                    } else if (padIndex == 1 && (now - lastMenuAction >= MENU_COOLDOWN_MS)) { 
                         ui.menuCursor++;
                         if (ui.menuCursor >= MENU_ITEM_COUNT) {
                             ui.menuCursor = 0;
@@ -78,7 +91,8 @@ void handleInput() {
                         } else if (ui.menuCursor >= ui.menuScroll + 4) {
                             ui.menuScroll = ui.menuCursor - 3;
                         }
-                    } else if (padIndex == 2) { 
+                        lastMenuAction = now;
+                    } else if (padIndex == 2 && (now - lastMenuAction >= MENU_COOLDOWN_MS)) { 
                         // Select / Action
                         int item = ui.menuCursor;
                         if (item == MENU_INSTRUMENT) {
@@ -101,24 +115,99 @@ void handleInput() {
                              int v = audioEngine.getVolume() + 20;
                              if (v > 100) v = 0;
                              audioEngine.setVolume(v);
-                        } else if (item == MENU_BRIGHTNESS) {
+                         } else if (item == MENU_BRIGHTNESS) {
                              // Cycle + 50ish (20%)
                              int b = hardware.getBrightness();
                              b += 51; // 20% of 255
                              if (b > 255) b = 0;
                              hardware.setBrightness(b);
-                        }
+                         }
+                         lastMenuAction = now;
                     } 
                     
-                    // Fine Adjustments (Pad 3: -, Pad 4: +)
-                    if (padIndex == 3) { // Decrease
+                    // Fine Adjustments (Pad 3: -, Pad 4: +) with cooldown
+                    const uint32_t FINE_ADJUST_COOLDOWN_MS = 100;
+                    if (padIndex == 3 && (now - lastMenuAction >= FINE_ADJUST_COOLDOWN_MS)) { // Decrease
                         if (ui.menuCursor == MENU_BPM) sequencer.setBPM(max(60, sequencer.getBPM() - 5));
                         else if (ui.menuCursor == MENU_VOLUME) audioEngine.setVolume(audioEngine.getVolume() - 5);
                         else if (ui.menuCursor == MENU_BRIGHTNESS) hardware.setBrightness(hardware.getBrightness() - 13); // ~5%
-                    } else if (padIndex == 4) { // Increase
+                        lastMenuAction = now;
+                    } else if (padIndex == 4 && (now - lastMenuAction >= FINE_ADJUST_COOLDOWN_MS)) { // Increase
                         if (ui.menuCursor == MENU_BPM) sequencer.setBPM(min(180, sequencer.getBPM() + 5));
                         else if (ui.menuCursor == MENU_VOLUME) audioEngine.setVolume(audioEngine.getVolume() + 5);
                         else if (ui.menuCursor == MENU_BRIGHTNESS) hardware.setBrightness(hardware.getBrightness() + 13);
+                        lastMenuAction = now;
+                    }
+                    
+                } else if (currentMode == MODE_NOTE_EDITOR) {
+                    // Note Editor Menu Navigation with Cooldown
+                    static uint32_t lastNoteMenuAction = 0;
+                    const uint32_t NOTE_MENU_COOLDOWN_MS = 150;
+                    uint32_t now = millis();
+                    
+                    // 0: Up, 1: Down, 2: Select
+                    if (padIndex == 0 && (now - lastNoteMenuAction >= NOTE_MENU_COOLDOWN_MS)) {
+                        ui.noteMenuCursor--;
+                        if (ui.noteMenuCursor < 0) {
+                            ui.noteMenuCursor = NOTE_MENU_ITEM_COUNT - 1;
+                            ui.noteMenuScroll = max(0, ui.noteMenuCursor - 3);
+                        } else if (ui.noteMenuCursor < ui.noteMenuScroll) {
+                            ui.noteMenuScroll = ui.noteMenuCursor;
+                        }
+                        lastNoteMenuAction = now;
+                    } else if (padIndex == 1 && (now - lastNoteMenuAction >= NOTE_MENU_COOLDOWN_MS)) { 
+                        ui.noteMenuCursor++;
+                        if (ui.noteMenuCursor >= NOTE_MENU_ITEM_COUNT) {
+                            ui.noteMenuCursor = 0;
+                            ui.noteMenuScroll = 0;
+                        } else if (ui.noteMenuCursor >= ui.noteMenuScroll + 4) {
+                            ui.noteMenuScroll = ui.noteMenuCursor - 3;
+                        }
+                        lastNoteMenuAction = now;
+                    } else if (padIndex == 2 && (now - lastNoteMenuAction >= NOTE_MENU_COOLDOWN_MS)) { 
+                        // Select / Action
+                        int item = ui.noteMenuCursor;
+                        if (item == NOTE_MENU_SWING) {
+                            // Cycle through preset values: 0, 25, 50, 75, 100
+                            int s = sequencer.getSwing();
+                            if (s == 0) s = 25;
+                            else if (s == 25) s = 50;
+                            else if (s == 50) s = 75;
+                            else if (s == 75) s = 100;
+                            else s = 0;
+                            sequencer.setSwing(s);
+                        } else if (item == NOTE_MENU_GATE) {
+                            // Cycle through preset values: 0.25, 0.5, 0.75, 1.0
+                            float g = sequencer.getGate();
+                            if (g < 0.3f) g = 0.5f;
+                            else if (g < 0.6f) g = 0.75f;
+                            else if (g < 0.9f) g = 1.0f;
+                            else g = 0.25f;
+                            sequencer.setGate(g);
+                        } else if (item == NOTE_MENU_FILTER) {
+                            // Cycle through preset values: 0.25, 0.5, 0.75, 1.0
+                            float f = audioEngine.getFilterCutoff();
+                            if (f < 0.3f) f = 0.5f;
+                            else if (f < 0.6f) f = 0.75f;
+                            else if (f < 0.9f) f = 1.0f;
+                            else f = 0.25f;
+                            audioEngine.setFilterCutoff(f);
+                        }
+                        lastNoteMenuAction = now;
+                    }
+                    
+                    // Fine Adjustments (Pad 3: -, Pad 4: +) with cooldown
+                    const uint32_t NOTE_FINE_ADJUST_COOLDOWN_MS = 100;
+                    if (padIndex == 3 && (now - lastNoteMenuAction >= NOTE_FINE_ADJUST_COOLDOWN_MS)) { // Decrease
+                        if (ui.noteMenuCursor == NOTE_MENU_SWING) sequencer.setSwing(max(0, sequencer.getSwing() - 5));
+                        else if (ui.noteMenuCursor == NOTE_MENU_GATE) sequencer.setGate(max(0.0f, sequencer.getGate() - 0.05f));
+                        else if (ui.noteMenuCursor == NOTE_MENU_FILTER) audioEngine.setFilterCutoff(max(0.0f, audioEngine.getFilterCutoff() - 0.05f));
+                        lastNoteMenuAction = now;
+                    } else if (padIndex == 4 && (now - lastNoteMenuAction >= NOTE_FINE_ADJUST_COOLDOWN_MS)) { // Increase
+                        if (ui.noteMenuCursor == NOTE_MENU_SWING) sequencer.setSwing(min(100, sequencer.getSwing() + 5));
+                        else if (ui.noteMenuCursor == NOTE_MENU_GATE) sequencer.setGate(min(1.0f, sequencer.getGate() + 0.05f));
+                        else if (ui.noteMenuCursor == NOTE_MENU_FILTER) audioEngine.setFilterCutoff(min(1.0f, audioEngine.getFilterCutoff() + 0.05f));
+                        lastNoteMenuAction = now;
                     }
                 }
             } // End Press Check
@@ -151,25 +240,17 @@ void setup() {
 
 void loop() {
     // 1. Audio Generation (Highest Priority)
-    // Fill buffer
-    // BUFFER_SIZE (256) samples per channel. 
-    // generate takes frames?
-    // main.cpp: generateAudio(buffer, BUFFER_SIZE/2) -> 128 frames.
-    // audioBuffer is int16_t * 2 * 256?
-    // Old code: int16_t audioBuffer[BUFFER_SIZE]; generate(..., BUFFER_SIZE/2). 
-    // And BUFFER_SIZE was 256. 
-    // So 128 stereo frames.
-    // Config.h: I2S_BUFFER_SIZE 256.
+    // Generate I2S_BUFFER_SIZE stereo frames into 32-bit buffer
+    // The new engine uses wavetable synthesis with band-limited oscillators
     
     memset(audioBuffer, 0, sizeof(audioBuffer));
-    audioEngine.generate(audioBuffer, I2S_BUFFER_SIZE / 2);
     
-    // 2. Output
-    // Size in bytes: I2S_BUFFER_SIZE * 2 (stereo) * 2 (bytes) ? Or is BUFFER_SIZE total samples (L+R)?
-    // Old code: i2s_write(..., BUFFER_SIZE * sizeof(int16_t)...)
-    // So BUFFER_SIZE was total individual samples (L+R). 
-    // Which means 128 frames.
-    hardware.writeAudio(audioBuffer, I2S_BUFFER_SIZE * sizeof(int16_t));
+    // Generate audio block (32-bit samples, interleaved stereo)
+    audioEngine.generate((int16_t*)audioBuffer, I2S_BUFFER_SIZE);
+    
+    // 2. Output to I2S/PCM5102A
+    // Size in bytes: frames * 2 channels * 4 bytes per sample (32-bit)
+    hardware.writeAudio(audioBuffer, I2S_BUFFER_SIZE * 2 * sizeof(int32_t));
     
     // 3. Inputs (Throttled)
     static int inputDiv = 0;
@@ -194,7 +275,7 @@ void loop() {
     
     // 6. Display (Low Priority)
     static int dispDiv = 0;
-    if (++dispDiv >= 30) { // Every ~200ms
+    if (++dispDiv >= 6) { // Every ~24ms (Assuming 4ms audio buffer loop)
         ui.draw(currentMode);
         dispDiv = 0;
     }

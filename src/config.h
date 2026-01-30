@@ -40,7 +40,8 @@ const int LED_PINS[4] = {9, 10, 11, 12};
 enum Mode {
   MODE_LAUNCHPAD,
   MODE_SEQUENCER,
-  MODE_SETTINGS
+  MODE_SETTINGS,
+  MODE_NOTE_EDITOR
 };
 
 // --- Instrument Types ---
@@ -79,6 +80,20 @@ static const char* menuItemNames[] = {
   "Clear Track",
   "Volume",
   "Brightness"
+};
+
+// --- Note Editor Menu Items ---
+enum NoteEditorMenuItem {
+  NOTE_MENU_SWING,
+  NOTE_MENU_GATE,
+  NOTE_MENU_FILTER,
+  NOTE_MENU_ITEM_COUNT
+};
+
+static const char* noteMenuItemNames[] = {
+  "Swing",
+  "Gate",
+  "Filter"
 };
 
 #endif

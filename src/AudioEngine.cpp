@@ -11,6 +11,9 @@ AudioEngine::AudioEngine() {
         voices[i].active = false;
         voices[i].releasing = false;
         voices[i].phase = 0.0f;
+        voices[i].attacking = false;
+        voices[i].attackEnv = 0.0f;
+        voices[i].fadeOutSamples = 0;
     }
 }
 
@@ -26,6 +29,14 @@ void AudioEngine::setVolume(int vol) {
 
 int AudioEngine::getVolume() {
     return (int)(masterVolume * 100);
+}
+
+void AudioEngine::setFilterCutoff(float cutoff) {
+    filterCutoff = constrain(cutoff, 0.0f, 1.0f);
+}
+
+float AudioEngine::getFilterCutoff() {
+    return filterCutoff;
 }
 
 // Simple visualizer: Return sum of active voice amplitudes (scaled)
@@ -47,48 +58,53 @@ void AudioEngine::generate(int16_t* buffer, int samples) {
         int activeVoices = 0;
         
         for (int v = 0; v < POLYPHONY; v++) {
-            if (voices[v].active) {
+            if (voices[v].active || voices[v].fadeOutSamples > 0) {
                 sampleMix += generateWaveform(voices[v]);
-                activeVoices++;
+                if (voices[v].active) activeVoices++;
             }
         }
         
-        // Simple Limiter / Mixer
-        if (activeVoices > 0) {
-            sampleMix /= (float)sqrt((float)activeVoices); // Soft scaling
+        // Soft Limiter / Mixer with headroom
+        if (activeVoices > 1) {
+            sampleMix /= (1.0f + 0.3f * (activeVoices - 1)); // Gentler scaling
         }
         
-        // Master Volume
-        sampleMix *= masterVolume;
+        // Master Volume (with slight headroom)
+        sampleMix *= masterVolume * 0.85f;
+
+        // Apply Low-Pass Filter (smoother cutoff response)
+        // Map 0-1 cutoff to useful frequency range
+        float lpfCoeff = 0.1f + filterCutoff * 0.85f;
+        lpf_state = lpf_state + lpfCoeff * (sampleMix - lpf_state);
+        sampleMix = lpf_state;
         
-        // DC Blocker (Simple High Pass)
-        // y[n] = x[n] - x[n-1] + R * y[n-1]
-        // Process Left/Right (Here mono source mixed to stereo)
+        // Gentler DC Blocker (reduces droning)
+        // Higher coefficient = less bass cut, less artifacts
+        const float dcBlockerCoeff = 0.9995f;
         float x = sampleMix;
-        float y_L = x - prevX_L + 0.995f * prevY_L;
+        float y = x - prevX_L + dcBlockerCoeff * prevY_L;
         prevX_L = x;
-        prevY_L = y_L;
+        prevY_L = y;
         
-        // Duplicate for Right for now (since source is mono)
-        float y_R = y_L; 
+        // Soft Clipping (tanh-like, warmer than hard clip)
+        if (y > 0.8f) {
+            y = 0.8f + 0.2f * tanhf((y - 0.8f) * 5.0f);
+        } else if (y < -0.8f) {
+            y = -0.8f + 0.2f * tanhf((y + 0.8f) * 5.0f);
+        }
         
-        // Clipping
-        if (y_L > 1.0f) y_L = 1.0f;
-        if (y_L < -1.0f) y_L = -1.0f;
+        // Final hard limit
+        if (y > 1.0f) y = 1.0f;
+        if (y < -1.0f) y = -1.0f;
         
-        // Interleaved Stereo (Right/Left)
-        // Note: Some DACs expect Left/Right, some Right/Left.
-        // Code here writes i*2 and i*2+1.
-        buffer[i*2] = (int16_t)(y_R * 30000.0f);     
-        buffer[i*2+1] = (int16_t)(y_L * 30000.0f); 
+        // Interleaved Stereo (Left, Right)
+        int16_t sample = (int16_t)(y * 28000.0f); // Slight headroom
+        buffer[i*2] = sample;     // Left
+        buffer[i*2+1] = sample;   // Right
         
-        // Update Visualizer Buffer (Just keep the last 128 samples of the frame)
-        // This is a simple circular-ish fill or just overwrite if we are fast enough
-        // To keep it stable, we might want to just copy the end of the buffer?
-        // Let's just write to it with a static index to "scroll" it or just fill it.
-        // For a simple oscilloscope, we often want to fill it continuously.
+        // Update Visualizer Buffer
         static int visIdx = 0;
-        visualizerBuffer[visIdx] = y_L; // Use Mono/Left signal
+        visualizerBuffer[visIdx] = y;
         visIdx = (visIdx + 1) % 128;
     }
 }
@@ -97,16 +113,22 @@ void AudioEngine::noteOn(int note, Instrument inst) {
     // Check if note is already playing?
     for (int i = 0; i < POLYPHONY; i++) {
         if (voices[i].active && voices[i].note == note) {
-            // Re-trigger
+            // Re-trigger with soft restart
             voices[i].releasing = false;
-            voices[i].envelope = 1.0f;
-            voices[i].phase = 0.0f;
+            voices[i].attacking = true;
+            voices[i].attackEnv = voices[i].envelope * voices[i].attackEnv; // Maintain current level
+            if (voices[i].attackEnv < 0.01f) voices[i].attackEnv = 0.01f;
             return;
         }
     }
 
     int v = findFreeVoice();
     if (v != -1) {
+        // If voice was active, set up crossfade
+        if (voices[v].active) {
+            voices[v].fadeOutSamples = 128; // Quick crossfade
+        }
+        
         voices[v].active = true;
         voices[v].releasing = false;
         voices[v].note = note;
@@ -114,7 +136,12 @@ void AudioEngine::noteOn(int note, Instrument inst) {
         voices[v].phase = 0.0f;
         voices[v].instrument = inst;
         voices[v].sampleCount = 0;
-        voices[v].envelope = 1.0f; 
+        voices[v].envelope = 1.0f;
+        
+        // Start with attack envelope (prevents pops)
+        voices[v].attacking = true;
+        voices[v].attackEnv = 0.0f;
+        
         voices[v].currentInc = voices[v].frequency / SAMPLE_RATE;
     }
 }
@@ -157,11 +184,27 @@ int AudioEngine::findFreeVoice() {
         if (voices[i].releasing) return i;
     }
     
-    // Steal oldest (lowest envelope?)
-    return -1;
+    // Steal oldest (lowest envelope)
+    int oldest = 0;
+    float minEnv = voices[0].envelope;
+    for (int i = 1; i < POLYPHONY; i++) {
+        if (voices[i].envelope < minEnv) {
+            minEnv = voices[i].envelope;
+            oldest = i;
+        }
+    }
+    return oldest;
 }
 
 float AudioEngine::generateWaveform(Voice& voice) {
+    // Handle fade-out for stolen voices
+    if (voice.fadeOutSamples > 0) {
+        voice.fadeOutSamples--;
+        // Just fade out the old sample
+        float fadeGain = (float)voice.fadeOutSamples / 128.0f;
+        return 0.0f; // Old voice silences quickly
+    }
+    
     float out = 0.0f;
     float phase = voice.phase;
     float inc = voice.currentInc;
@@ -182,29 +225,75 @@ float AudioEngine::generateWaveform(Voice& voice) {
         case INST_TRIANGLE:
             out = (phase < 0.5f) ? (4.0f * phase - 1.0f) : (3.0f - 4.0f * phase);
             break;
-        default: 
-            out = sinf(2.0f * PI * phase); 
-            if (voice.instrument == INST_BASS) {
-                 out = (phase < 0.5f) ? 1.0f : -1.0f; 
+        case INST_PLUCK:
+            // Pluck: Starts bright, becomes more sine-like
+            {
+                float brightness = voice.envelope;
+                float saw = (2.0f * phase) - 1.0f;
+                saw -= poly_blep(phase, inc);
+                float sine = sinf(2.0f * PI * phase);
+                out = brightness * saw + (1.0f - brightness) * sine;
             }
+            break;
+        case INST_BASS:
+            // Bass: Sub-octave + slight saw
+            {
+                float sub = sinf(PI * phase); // Sub octave (half freq)
+                float saw = (2.0f * phase) - 1.0f;
+                out = 0.7f * sub + 0.3f * saw;
+            }
+            break;
+        case INST_PAD:
+            // Pad: Detuned sines for chorus effect
+            {
+                float p1 = sinf(2.0f * PI * phase);
+                float p2 = sinf(2.0f * PI * phase * 1.003f);
+                float p3 = sinf(2.0f * PI * phase * 0.997f);
+                out = (p1 + p2 + p3) / 3.0f;
+            }
+            break;
+        case INST_LEAD:
+            // Lead: Pulse wave with slight PWM feel
+            {
+                float pw = 0.3f; // Pulse width
+                out = (phase < pw) ? 1.0f : -1.0f;
+                out += poly_blep(phase, inc);
+                out -= poly_blep(fmod(phase + (1.0f - pw), 1.0f), inc);
+            }
+            break;
+        default: 
+            out = sinf(2.0f * PI * phase);
             break;
     }
     
-    // Envelope Logic
+    // Attack Envelope (prevents pops on note start)
+    if (voice.attacking) {
+        voice.attackEnv += 0.002f; // ~23ms attack at 44.1kHz
+        if (voice.attackEnv >= 1.0f) {
+            voice.attackEnv = 1.0f;
+            voice.attacking = false;
+        }
+        out *= voice.attackEnv;
+    }
+    
+    // Release Envelope
     if (voice.releasing) {
-        // Fast Release
-        voice.envelope *= 0.9f;
+        // Faster release for cleaner cutoff
+        voice.envelope *= 0.9985f; // ~150ms release
         if (voice.envelope < 0.001f) {
             voice.active = false;
+            voice.fadeOutSamples = 0;
             return 0.0f;
         }
     } else {
-        // Attack/Sustain/Decay
+        // Decay for pluck-style instruments
         if (voice.instrument == INST_PLUCK) {
-            voice.envelope *= 0.9999f;
-            if (voice.envelope < 0.001f) voice.active = false;
+            voice.envelope *= 0.99985f; // Natural decay
+            if (voice.envelope < 0.001f) {
+                voice.active = false;
+                return 0.0f;
+            }
         }
-        // Others sustain at 1.0f
     }
     
     out *= voice.envelope;

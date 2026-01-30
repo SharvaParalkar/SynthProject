@@ -27,6 +27,7 @@ void SynthUI::draw(Mode currentMode) {
         case MODE_LAUNCHPAD: drawLaunchpadMode(); break;
         case MODE_SEQUENCER: drawSequencerMode(); break;
         case MODE_SETTINGS:  drawSettingsMode(); break;
+        case MODE_NOTE_EDITOR: drawNoteEditorMode(); break;
     }
     
     u8g2.sendBuffer();
@@ -224,6 +225,50 @@ void SynthUI::drawSettingsMode() {
     }
     
     if (menuScroll + 4 < MENU_ITEM_COUNT) {
+        u8g2.drawStr(116, 60, "v");
+    }
+}
+
+void SynthUI::drawNoteEditorMode() {
+    u8g2.setFont(FONT_BODY);
+    u8g2.drawStr(0, 10, "Note Editor");
+    u8g2.drawLine(0, 12, 128, 12);
+    
+    // Scroll Indicators
+    if (noteMenuScroll > 0) {
+        u8g2.drawStr(116, 24, "^");
+    }
+    
+    // Display 4 items max to fit screen
+    for (int i = 0; i < 4; i++) {
+        int itemIndex = noteMenuScroll + i;
+        if (itemIndex >= NOTE_MENU_ITEM_COUNT) break;
+        
+        int y = 24 + (i * 12);
+        
+        if (itemIndex == noteMenuCursor) {
+            u8g2.drawStr(0, y, ">");
+        }
+        
+        u8g2.drawStr(10, y, noteMenuItemNames[itemIndex]);
+        
+        // Value (Right Aligned)
+        char val[32];
+        if (itemIndex == NOTE_MENU_SWING) {
+            sprintf(val, "%d%%", sequencer.getSwing());
+        } else if (itemIndex == NOTE_MENU_GATE) {
+            int gatePct = (int)(sequencer.getGate() * 100.0f);
+            sprintf(val, "%d%%", gatePct);
+        } else if (itemIndex == NOTE_MENU_FILTER) {
+            int filterPct = (int)(audioEngine.getFilterCutoff() * 100.0f);
+            sprintf(val, "%d%%", filterPct);
+        }
+        
+        int w = u8g2.getStrWidth(val);
+        u8g2.drawStr(128 - w - 12, y, val);
+    }
+    
+    if (noteMenuScroll + 4 < NOTE_MENU_ITEM_COUNT) {
         u8g2.drawStr(116, 60, "v");
     }
 }

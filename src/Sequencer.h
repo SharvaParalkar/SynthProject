@@ -36,6 +36,19 @@ public:
     bool sequence[4][16];
     Instrument trackInstruments[4];
 
+    // New Features
+    void savePattern(int patternNum);
+    void loadPattern(int patternNum);
+    
+    // Swing & Gate Control
+    void setSwing(int amount); // 0-100
+    int getSwing();
+    void setGate(float length); // 0.0-1.0
+    float getGate();
+    
+    int swingAmount; // 0-100
+    float gateLength; // 0.0 - 1.0
+
 private:
     AudioEngine& audioEngine;
     int bpm;
@@ -46,6 +59,9 @@ private:
     unsigned long lastStepTime;
     
     uint8_t stepNotes[4][16];
+
+    // Track active notes for gate control
+    int activeStepNotes[4];
 };
 
 #endif

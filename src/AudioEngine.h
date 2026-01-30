@@ -17,6 +17,13 @@ struct Voice {
     
     // For PolyBLEP
     float currentInc;
+    
+    // Attack envelope (prevents pops)
+    bool attacking;
+    float attackEnv;
+    
+    // For voice stealing crossfade
+    int fadeOutSamples;
 };
 
 class AudioEngine {
@@ -34,6 +41,10 @@ public:
     int getVolume();
     float getVisualizerLevel(); // 0.0 - 1.0 (Approx amplitude)
     
+    // Filter Control
+    void setFilterCutoff(float cutoff); // 0.0-1.0
+    float getFilterCutoff();
+    
 private:
     Voice voices[POLYPHONY];
     float midiToFreq(int note);
@@ -46,10 +57,12 @@ private:
     // DC Blocker state
     float prevX_L = 0.0f;
     float prevY_L = 0.0f;
-    float prevX_R = 0.0f;
-    float prevY_R = 0.0f;
+    
+    // Low-pass filter state
+    float lpf_state = 0.0f;
     
     float masterVolume = 0.8f;
+    float filterCutoff = 0.5f;
     
     // Waveform Buffer for UI
     float visualizerBuffer[128];
