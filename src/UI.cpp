@@ -88,19 +88,15 @@ void SynthUI::drawLaunchpadMode() {
     // Draw Frame
     u8g2.drawFrame(visX, visY, visW, visH);
     
-    // Draw Waveform
+    // Draw Waveform (ring buffer: oldest at ringIdx, newest at ringIdx-1)
     const float* wave = audioEngine.getWaveform();
-    // We have 128 samples in buffer, we have visW pixels.
-    // Let's just draw one pixel per X for the width we have.
-    // If visW < 128, we skip samples.
-    // To make it look stable, we might want to trigger, but for now just raw buffer.
+    int ringIdx = audioEngine.getWaveformRingIndex();
     
     int prevY = midY;
     
     for (int i = 0; i < visW; i++) {
-        // Map i to buffer index (0..127)
-        int bufIdx = (i * 128) / visW;
-        if (bufIdx >= 128) bufIdx = 127;
+        int bufIdx = (ringIdx + (i * 128) / visW) % 128;
+        if (bufIdx < 0) bufIdx += 128;
         
         float sample = wave[bufIdx];
         

@@ -2,7 +2,6 @@
 #define HARDWARE_H
 
 #include <Arduino.h>
-#include <driver/i2s.h>
 #include "Config.h"
 
 // Debounce time in milliseconds

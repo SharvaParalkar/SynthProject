@@ -1,30 +1,98 @@
 #include "AudioEngine.h"
+#include "AudioTools.h"
+#include "AudioTools/AudioLibs/MaximilianDSP.h"
 #include <math.h>
 
-// Constants
 #ifndef PI
-#define PI 3.14159265358979323846
+#define PI 3.14159265358979323846f
 #endif
 
+// -----------------------------------------------------------------------------
+// Static Maximilian objects - live in .cpp to avoid pulling headers into AudioEngine.h
+// play() is called once per stereo sample at audio rate (e.g. 32000 Hz)
+// -----------------------------------------------------------------------------
+static audio_tools::I2SStream i2sOut;
+static audio_tools::Maximilian* s_maximilian = nullptr;
+static maxiOsc s_osc[POLYPHONY];
+static maxiFilter s_filter;
+static AudioEngine* g_audioEngine = nullptr;
+
+// DC blocker state (removes droning from filter/osc DC)
+static float s_dcPrevX = 0.0f;
+static float s_dcPrevY = 0.0f;
+static const float DC_COEFF = 0.9992f;
+
+// Forward declare so we can pass to Maximilian constructor
+void play(maxi_float_t* channels);
+
+// -----------------------------------------------------------------------------
+// play() - Called once per stereo sample by maximilian.copy()
+// No I/O here - pure DSP. Buttons/UI are handled in loop().
+// -----------------------------------------------------------------------------
+void play(maxi_float_t* channels) {
+    if (g_audioEngine)
+        g_audioEngine->playCallback(channels);
+    else {
+        channels[0] = 0;
+        channels[1] = 0;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// AudioEngine
+// -----------------------------------------------------------------------------
 AudioEngine::AudioEngine() {
     for (int i = 0; i < POLYPHONY; i++) {
         voices[i].active = false;
         voices[i].releasing = false;
-        voices[i].phase = 0.0f;
+        voices[i].envelope = 0.0f;
         voices[i].attacking = false;
         voices[i].attackEnv = 0.0f;
-        voices[i].fadeOutSamples = 0;
     }
+    masterVolume = 0.8f;
+    filterCutoff = 0.5f;
+    visualizerIdx = 0;
+    lpf_state = 0.0f;
 }
 
 void AudioEngine::init() {
-    // Nothing specific yet
+    g_audioEngine = this;
+
+    // Match working reference: 32 kHz, 16-bit (default), let Maximilian handle writes
+    auto cfg = i2sOut.defaultConfig(audio_tools::TX_MODE);
+    cfg.sample_rate = 32000;
+    cfg.channels = 2;
+    cfg.pin_bck = I2S_BCLK;
+    cfg.pin_ws = I2S_LRC;
+    cfg.pin_data = I2S_DOUT;
+    cfg.is_master = true;
+    cfg.buffer_size = 256;
+
+    if (!i2sOut.begin(cfg)) {
+        Serial.println("[AudioEngine] I2S begin FAILED");
+        return;
+    }
+    Serial.println("[AudioEngine] I2S started @ 32 kHz");
+
+    // Use Maximilian wrapper (handles buffer + I2S writes)
+    s_maximilian = new audio_tools::Maximilian(i2sOut);
+    s_maximilian->begin(cfg);
+    s_maximilian->setVolume(1.0f);  // we apply volume in playCallback
+
+    resetFilterState();
+}
+
+void AudioEngine::copy() {
+    if (s_maximilian)
+        s_maximilian->copy();
 }
 
 void AudioEngine::setVolume(int vol) {
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
     masterVolume = vol / 100.0f;
+    if (s_maximilian)
+        s_maximilian->setVolume(masterVolume);
 }
 
 int AudioEngine::getVolume() {
@@ -39,124 +107,127 @@ float AudioEngine::getFilterCutoff() {
     return filterCutoff;
 }
 
-// Simple visualizer: Return sum of active voice amplitudes (scaled)
 float AudioEngine::getVisualizerLevel() {
     float sum = 0.0f;
     for (int i = 0; i < POLYPHONY; i++) {
-        if (voices[i].active) {
-            sum += voices[i].envelope; // Envelope tracks ADSR
-        }
+        if (voices[i].active)
+            sum += voices[i].envelope;
     }
-    // Cap at 1.0 roughly
-    if (sum > 1.0f) sum = 1.0f;
-    return sum;
+    return sum > 1.0f ? 1.0f : sum;
 }
 
-void AudioEngine::generate(int32_t* buffer, int samples) {
-    for (int i = 0; i < samples; i++) {
-        float sampleMix = 0.0f;
-        int activeVoices = 0;
-        
-        for (int v = 0; v < POLYPHONY; v++) {
-            if (voices[v].active || voices[v].fadeOutSamples > 0) {
-                sampleMix += generateWaveform(voices[v]);
-                if (voices[v].active) activeVoices++;
-            }
-        }
-        
-        // Soft Limiter / Mixer with headroom
-        if (activeVoices > 1) {
-            sampleMix /= (1.0f + 0.3f * (activeVoices - 1)); // Gentler scaling
-        }
-        
-        // Master Volume (with slight headroom)
-        sampleMix *= masterVolume * 0.85f;
+void AudioEngine::playCallback(float* channels) {
+    // Always call all oscillators (keep them free-running even when silent)
+    // to avoid phase discontinuities - match reference implementation
+    
+    float sampleMix = 0.0f;
+    int activeCount = 0;
 
-        // Apply Low-Pass Filter (smoother cutoff response)
-        // Map 0-1 cutoff to useful frequency range
-        float lpfCoeff = 0.1f + filterCutoff * 0.85f;
-        lpf_state = lpf_state + lpfCoeff * (sampleMix - lpf_state);
-        sampleMix = lpf_state;
+    for (int v = 0; v < POLYPHONY; v++) {
+        float freq = voices[v].frequency;
+        if (freq < 20.0f) freq = 220.0f;  // valid freq for free-running
         
-        // Gentler DC Blocker (reduces droning)
-        // Higher coefficient = less bass cut, less artifacts
-        const float dcBlockerCoeff = 0.9995f;
-        float x = sampleMix;
-        float y = x - prevX_L + dcBlockerCoeff * prevY_L;
-        prevX_L = x;
-        prevY_L = y;
-        
-        // Soft Clipping (tanh-like, warmer than hard clip)
-        if (y > 0.8f) {
-            y = 0.8f + 0.2f * tanhf((y - 0.8f) * 5.0f);
-        } else if (y < -0.8f) {
-            y = -0.8f + 0.2f * tanhf((y + 0.8f) * 5.0f);
+        // Always call oscillator to keep phase continuous
+        float out = 0.0f;
+        switch (voices[v].instrument) {
+            case INST_SINE:
+                out = s_osc[v].sinewave(freq);
+                break;
+            case INST_SQUARE:
+                out = s_osc[v].square(freq);
+                break;
+            case INST_SAW:
+                out = s_osc[v].sawn(freq);
+                break;
+            case INST_TRIANGLE:
+                out = s_osc[v].triangle(freq);
+                break;
+            case INST_PLUCK:
+            case INST_BASS:
+                out = s_osc[v].sawn(freq);
+                break;
+            case INST_PAD:
+            case INST_LEAD:
+                out = s_osc[v].pulse(freq, 0.3f);
+                break;
+            default:
+                out = s_osc[v].sinewave(freq);
+                break;
         }
         
-        // Final hard limit
-        if (y > 1.0f) y = 1.0f;
-        if (y < -1.0f) y = -1.0f;
-        
-        // =========================================================================
-        // 32-BIT OUTPUT FOR PCM5102A DAC
-        // =========================================================================
-        // PCM5102A expects 32-bit I2S frames with 24-bit audio data left-justified.
-        // We scale to full int32_t range for maximum dynamic range.
-        // Using 2147483647 (2^31 - 1) for positive, 2147483648 for negative.
-        int32_t sample32 = (int32_t)(y * 2147483647.0f);
-        
-        buffer[i*2] = sample32;     // Left
-        buffer[i*2+1] = sample32;   // Right
-        
-        // Update Visualizer Buffer
-        static int visIdx = 0;
-        visualizerBuffer[visIdx] = y;
-        visIdx = (visIdx + 1) % 128;
+        // Only output if voice is active (gate logic - no complex envelopes)
+        if (voices[v].active) {
+            sampleMix += out;
+            activeCount++;
+        }
     }
+
+    if (activeCount == 0) {
+        channels[0] = 0.0f;
+        channels[1] = 0.0f;
+        s_dcPrevX = 0.0f;
+        s_dcPrevY = 0.0f;
+        visualizerBuffer[visualizerIdx] = 0.0f;
+        visualizerIdx = (visualizerIdx + 1) % 128;
+        return;
+    }
+
+    // Average voices
+    if (activeCount > 1)
+        sampleMix /= (float)activeCount;
+
+    // Filter (match reference: lores with low resonance)
+    float cutoffHz = 200.0f + filterCutoff * 2000.0f;
+    sampleMix = s_filter.lores(sampleMix, cutoffHz, 0.1);
+
+    // Scale (match reference output level)
+    sampleMix *= 0.3f * masterVolume;
+
+    // DC blocker
+    float x = sampleMix;
+    float y = x - s_dcPrevX + DC_COEFF * s_dcPrevY;
+    s_dcPrevX = x;
+    s_dcPrevY = y;
+
+    // Soft clip
+    if (y > 0.9f) y = 0.9f;
+    if (y < -0.9f) y = -0.9f;
+
+    channels[0] = y;
+    channels[1] = y;
+
+    visualizerBuffer[visualizerIdx] = y;
+    visualizerIdx = (visualizerIdx + 1) % 128;
 }
 
 void AudioEngine::noteOn(int note, Instrument inst) {
-    // Check if note is already playing?
     for (int i = 0; i < POLYPHONY; i++) {
         if (voices[i].active && voices[i].note == note) {
-            // Re-trigger with soft restart
             voices[i].releasing = false;
             voices[i].attacking = true;
-            voices[i].attackEnv = voices[i].envelope * voices[i].attackEnv; // Maintain current level
+            voices[i].attackEnv = voices[i].envelope * voices[i].attackEnv;
             if (voices[i].attackEnv < 0.01f) voices[i].attackEnv = 0.01f;
             return;
         }
     }
 
     int v = findFreeVoice();
-    if (v != -1) {
-        // If voice was active, set up crossfade
-        if (voices[v].active) {
-            voices[v].fadeOutSamples = 128; // Quick crossfade
-        }
-        
-        voices[v].active = true;
-        voices[v].releasing = false;
-        voices[v].note = note;
-        voices[v].frequency = midiToFreq(note);
-        voices[v].phase = 0.0f;
-        voices[v].instrument = inst;
-        voices[v].sampleCount = 0;
-        voices[v].envelope = 1.0f;
-        
-        // Start with attack envelope (prevents pops)
-        voices[v].attacking = true;
-        voices[v].attackEnv = 0.0f;
-        
-        voices[v].currentInc = voices[v].frequency / SAMPLE_RATE;
-    }
+    if (v == -1) return;
+
+    voices[v].active = true;
+    voices[v].releasing = false;
+    voices[v].note = note;
+    voices[v].frequency = midiToFreq(note);
+    voices[v].instrument = inst;
+    voices[v].envelope = 1.0f;
+    
+    // Oscillators free-run (no phase reset) - smooth continuous phase like reference
 }
 
 void AudioEngine::noteOff(int note) {
     for (int i = 0; i < POLYPHONY; i++) {
-        if (voices[i].active && voices[i].note == note) {
-            voices[i].releasing = true; // Trigger release phase
-        }
+        if (voices[i].active && voices[i].note == note)
+            voices[i].active = false;  // instant off (oscillator keeps running)
     }
 }
 
@@ -164,42 +235,32 @@ void AudioEngine::killAll() {
     for (int i = 0; i < POLYPHONY; i++) {
         voices[i].active = false;
         voices[i].releasing = false;
-        voices[i].fadeOutSamples = 0;
     }
-    // Reset filter state to prevent DC offset droning after silence
     resetFilterState();
 }
 
 void AudioEngine::resetFilterState() {
     lpf_state = 0.0f;
-    prevX_L = 0.0f;
-    prevY_L = 0.0f;
+    s_dcPrevX = 0.0f;
+    s_dcPrevY = 0.0f;
 }
 
 int AudioEngine::getActiveVoiceCount() {
     int c = 0;
-    for (int i = 0; i < POLYPHONY; i++) {
+    for (int i = 0; i < POLYPHONY; i++)
         if (voices[i].active) c++;
-    }
     return c;
 }
 
 float AudioEngine::midiToFreq(int note) {
-    return 440.0f * pow(2.0f, (note - 69) / 12.0f);
+    return 440.0f * powf(2.0f, (note - 69) / 12.0f);
 }
 
 int AudioEngine::findFreeVoice() {
-    // First try to find non-active
-    for (int i = 0; i < POLYPHONY; i++) {
+    for (int i = 0; i < POLYPHONY; i++)
         if (!voices[i].active) return i;
-    }
-    
-    // If all active, find one that is releasing
-    for (int i = 0; i < POLYPHONY; i++) {
+    for (int i = 0; i < POLYPHONY; i++)
         if (voices[i].releasing) return i;
-    }
-    
-    // Steal oldest (lowest envelope)
     int oldest = 0;
     float minEnv = voices[0].envelope;
     for (int i = 1; i < POLYPHONY; i++) {
@@ -209,126 +270,4 @@ int AudioEngine::findFreeVoice() {
         }
     }
     return oldest;
-}
-
-float AudioEngine::generateWaveform(Voice& voice) {
-    // Handle fade-out for stolen voices
-    if (voice.fadeOutSamples > 0) {
-        voice.fadeOutSamples--;
-        // Just fade out the old sample
-        float fadeGain = (float)voice.fadeOutSamples / 128.0f;
-        return 0.0f; // Old voice silences quickly
-    }
-    
-    float out = 0.0f;
-    float phase = voice.phase;
-    float inc = voice.currentInc;
-    
-    switch (voice.instrument) {
-        case INST_SINE:
-            out = sinf(2.0f * PI * phase);
-            break;
-        case INST_SQUARE:
-            out = (phase < 0.5f) ? 1.0f : -1.0f;
-            out += poly_blep(phase, inc);
-            out -= poly_blep(fmod(phase + 0.5f, 1.0f), inc);
-            break;
-        case INST_SAW:
-            out = (2.0f * phase) - 1.0f;
-            out -= poly_blep(phase, inc);
-            break;
-        case INST_TRIANGLE:
-            out = (phase < 0.5f) ? (4.0f * phase - 1.0f) : (3.0f - 4.0f * phase);
-            break;
-        case INST_PLUCK:
-            // Pluck: Starts bright, becomes more sine-like
-            {
-                float brightness = voice.envelope;
-                float saw = (2.0f * phase) - 1.0f;
-                saw -= poly_blep(phase, inc);
-                float sine = sinf(2.0f * PI * phase);
-                out = brightness * saw + (1.0f - brightness) * sine;
-            }
-            break;
-        case INST_BASS:
-            // Bass: Sub-octave + slight saw
-            {
-                float sub = sinf(PI * phase); // Sub octave (half freq)
-                float saw = (2.0f * phase) - 1.0f;
-                out = 0.7f * sub + 0.3f * saw;
-            }
-            break;
-        case INST_PAD:
-            // Pad: Detuned sines for chorus effect
-            {
-                float p1 = sinf(2.0f * PI * phase);
-                float p2 = sinf(2.0f * PI * phase * 1.003f);
-                float p3 = sinf(2.0f * PI * phase * 0.997f);
-                out = (p1 + p2 + p3) / 3.0f;
-            }
-            break;
-        case INST_LEAD:
-            // Lead: Pulse wave with slight PWM feel
-            {
-                float pw = 0.3f; // Pulse width
-                out = (phase < pw) ? 1.0f : -1.0f;
-                out += poly_blep(phase, inc);
-                out -= poly_blep(fmod(phase + (1.0f - pw), 1.0f), inc);
-            }
-            break;
-        default: 
-            out = sinf(2.0f * PI * phase);
-            break;
-    }
-    
-    // Attack Envelope (prevents pops on note start)
-    if (voice.attacking) {
-        voice.attackEnv += 0.002f; // ~23ms attack at 44.1kHz
-        if (voice.attackEnv >= 1.0f) {
-            voice.attackEnv = 1.0f;
-            voice.attacking = false;
-        }
-        out *= voice.attackEnv;
-    }
-    
-    // Release Envelope
-    if (voice.releasing) {
-        // Faster release for cleaner cutoff
-        voice.envelope *= 0.9985f; // ~150ms release
-        if (voice.envelope < 0.001f) {
-            voice.active = false;
-            voice.fadeOutSamples = 0;
-            return 0.0f;
-        }
-    } else {
-        // Decay for pluck-style instruments
-        if (voice.instrument == INST_PLUCK) {
-            voice.envelope *= 0.99985f; // Natural decay
-            if (voice.envelope < 0.001f) {
-                voice.active = false;
-                return 0.0f;
-            }
-        }
-    }
-    
-    out *= voice.envelope;
-    
-    voice.sampleCount++;
-    
-    voice.phase += inc;
-    if (voice.phase >= 1.0f) voice.phase -= 1.0f;
-    
-    return out;
-}
-
-// PolyBLEP for antialiasing
-double AudioEngine::poly_blep(double t, double dt) {
-    if (t < dt) {
-        t /= dt;
-        return t+t - t*t - 1.0;
-    } else if (t > 1.0 - dt) {
-        t = (t - 1.0) / dt;
-        return t*t + t+t + 1.0;
-    }
-    return 0.0;
 }

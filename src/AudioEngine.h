@@ -5,73 +5,56 @@
 #include "Config.h"
 
 struct Voice {
-    float phase;
     float frequency;
-    int note; // Track MIDI note for re-triggering logic
+    int note;
     float amplitude;
     bool active;
     bool releasing;
     Instrument instrument;
-    uint32_t sampleCount;
     float envelope;
-    
-    // For PolyBLEP
-    float currentInc;
-    
-    // Attack envelope (prevents pops)
     bool attacking;
     float attackEnv;
-    
-    // For voice stealing crossfade
-    int fadeOutSamples;
 };
 
 class AudioEngine {
 public:
     AudioEngine();
     void init();
-    void generate(int32_t* buffer, int samples);
+    /// Called from loop() - fills buffer via play() and writes to I2S (AudioTools + Maximilian)
+    void copy();
+
     void noteOn(int note, Instrument inst);
     void noteOff(int note);
     void killAll();
     int getActiveVoiceCount();
-    
-    // Volume & Visualizer
+
     void setVolume(int vol); // 0-100
     int getVolume();
-    float getVisualizerLevel(); // 0.0 - 1.0 (Approx amplitude)
-    
-    // Filter Control
+    float getVisualizerLevel();
+
     void setFilterCutoff(float cutoff); // 0.0-1.0
     float getFilterCutoff();
-    
+
+    /// Called once per stereo sample by Maximilian (audio rate) - pure DSP, no I/O
+    void playCallback(float* channels);
+
+    const float* getWaveform() { return visualizerBuffer; }
+    /// Ring-buffer write head: UI should read (getWaveformRingIndex() + i) % 128 for time order
+    int getWaveformRingIndex() const { return visualizerIdx; }
+
 private:
     Voice voices[POLYPHONY];
     float midiToFreq(int note);
     int findFreeVoice();
-    
-    // Synthesis methods
-    float generateWaveform(Voice& voice);
-    double poly_blep(double t, double dt);
-    
-    // DC Blocker state
-    float prevX_L = 0.0f;
-    float prevY_L = 0.0f;
-    
-    // Low-pass filter state
-    float lpf_state = 0.0f;
-    
-    // Reset filter/DC blocker state (called on killAll)
-    void resetFilterState();
-    
-    float masterVolume = 0.8f;
-    float filterCutoff = 0.5f;
-    
-    // Waveform Buffer for UI
+
+    float masterVolume;
+    float filterCutoff;
+
     float visualizerBuffer[128];
-    
-public: 
-    const float* getWaveform() { return visualizerBuffer; }
+    int visualizerIdx;
+
+    float lpf_state;
+    void resetFilterState();
 };
 
 #endif
