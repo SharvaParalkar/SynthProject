@@ -72,8 +72,15 @@ void handleInput() {
                     audioEngine.noteOn(note, inst);
                     
                 } else if (currentMode == MODE_SEQUENCER) {
-                    // Toggle Step
-                    sequencer.toggleStep(sequencer.getCurrentTrack(), padIndex);
+                    // Toggle Step with debouncing
+                    static uint32_t lastSequencerAction = 0;
+                    const uint32_t SEQUENCER_DEBOUNCE_MS = 220;  // 150ms debounce
+                    uint32_t now = millis();
+                    
+                    if (now - lastSequencerAction >= SEQUENCER_DEBOUNCE_MS) {
+                        sequencer.toggleStep(sequencer.getCurrentTrack(), padIndex);
+                        lastSequencerAction = now;
+                    }
                     
                 } else if (currentMode == MODE_SETTINGS) {
                     // Menu Navigation with Cooldown to prevent rapid-fire
@@ -300,9 +307,9 @@ void loop() {
         lastBgTask = now;
     }
     
-    // Display updates at 20 Hz
+    // Display updates at 60 Hz (faster refresh)
     static uint32_t lastDisplay = 0;
-    if (now - lastDisplay >= 50) {
+    if (now - lastDisplay >= 16) {
         ui.draw(currentMode);
         lastDisplay = now;
     }

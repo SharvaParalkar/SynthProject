@@ -100,8 +100,8 @@ void SynthUI::drawLaunchpadMode() {
         
         float sample = wave[bufIdx];
         
-        // Scale sample (-1.0 to 1.0) to height (+- visH/2)
-        int drawY = midY - (int)(sample * (visH / 2));
+        // Scale sample (-1.0 to 1.0) to height with 2.5x gain for bigger waves
+        int drawY = midY - (int)(sample * (visH / 2) * 2.5f);
         
         // Clamp
         if (drawY < visY + 1) drawY = visY + 1;
